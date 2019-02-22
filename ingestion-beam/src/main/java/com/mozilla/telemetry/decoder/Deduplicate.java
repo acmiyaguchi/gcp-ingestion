@@ -23,16 +23,21 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
 import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.Flatten;
+import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.PInput;
 import org.apache.beam.sdk.values.POutput;
 import org.apache.beam.sdk.values.PValue;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
+import org.apache.beam.sdk.values.TypeDescriptor;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.exceptions.JedisConnectionException;
 
 /**
  * Collection of transforms that interact with a Redis instance for marking seen IDs and filtering
@@ -105,6 +110,23 @@ public class Deduplicate {
             errorTag());
       }
 
+      /**
+       * Strip the payload from duplicate messages and add them to the error collection, returning
+       * a {@link Result} of the non-duplicate output and the error collection.
+       */
+      public WithErrors.Result<PCollection<PubsubMessage>> sendDuplicateMetadataToErrors() {
+        PCollection<PubsubMessage> duplicateMetadata = tuple().get(duplicateTag())
+            .apply("DropDuplicatePayloads", MapElements //
+                .into(TypeDescriptor.of(PubsubMessage.class))
+                .via(message -> FailureMessage.of("Duplicate",
+                    new PubsubMessage("".getBytes(), message.getAttributeMap()),
+                    new DuplicateIdException())));
+        PCollection<PubsubMessage> errors = PCollectionList.of(tuple().get(errorTag()))
+            .and(duplicateMetadata)
+            .apply("FlattenDuplicateMetadataAndErrors", Flatten.pCollections());
+        return WithErrors.Result.of(tuple().get(outputTag()), outputTag(), errors, errorTag());
+      }
+
       @Override
       public Pipeline getPipeline() {
         return tuple().getPipeline();
@@ -140,11 +162,9 @@ public class Deduplicate {
         boolean idExists = false;
         boolean exceptionWasThrown = false;
         try {
-          idExists = //
+          idExists =
               // Throws IllegalArgumentException if id is present and invalid
-              getId(element)
-                  // Throws JedisConnectionException if redis can't be reached
-                  .filter(redisIdService.getJedis()::exists).isPresent();
+              getId(element).filter(redisIdService::exists).isPresent();
         } catch (Exception e) {
           exceptionWasThrown = true;
           out.get(errorTag).output(FailureMessage.of(RemoveDuplicates.this, element, e));
@@ -160,6 +180,7 @@ public class Deduplicate {
           }
         }
       }
+
     }
 
   }
@@ -193,22 +214,23 @@ public class Deduplicate {
       }
     }
 
-    private String setex(byte[] id) {
-      return redisIdService.getJedis().setex(id, getTtlSeconds(), new byte[0]);
-    }
-
     @Override
     protected PubsubMessage processElement(PubsubMessage element) {
       element = PubsubConstraints.ensureNonNull(element);
       // Throws IllegalArgumentException if id is present and invalid
-      getId(element)
-          // Throws JedisConnectionException if redis can't be reached
-          .map(this::setex);
+      getId(element).ifPresent(id -> redisIdService.setWithExpiration(id, getTtlSeconds()));
       return element;
     }
   }
 
   ////////
+
+  private static class DuplicateIdException extends Exception {
+
+    DuplicateIdException() {
+      super("A message with this documentId has already been successfully processed.");
+    }
+  }
 
   private static class RedisIdService implements Serializable {
 
@@ -219,14 +241,52 @@ public class Deduplicate {
       this.uri = uri;
     }
 
+    boolean exists(byte[] key) {
+      try {
+        return getJedis().exists(key);
+      } catch (JedisConnectionException e) {
+        // The connection is in a bad state, perhaps due to the Redis cluster failing over to
+        // a different node, so we reset the connection and assume the key doesn't exist.
+        initializeNewClient();
+        return false;
+      }
+    }
+
+    void setWithExpiration(byte[] key, int ttl) {
+      try {
+        getJedis().setex(key, ttl, new byte[0]);
+      } catch (JedisConnectionException e) {
+        // The connection is in a bad state, perhaps due to the Redis cluster failing over to
+        // a different node, so we reset the connection and ignore this key.
+        initializeNewClient();
+      }
+    }
+
     /**
      * Lazy get transient {@link Jedis} client.
      */
-    Jedis getJedis() {
+    private Jedis getJedis() {
       if (jedis == null) {
-        jedis = new Jedis(uri.get());
+        initializeNewClient();
       }
       return jedis;
+    }
+
+    /**
+     * Attempt to close any existing Redis client and initializes a new client.
+     *
+     * <p>This is used to create the initial connection, but is also useful in cases like failover
+     * where the existing connection becomes broken and does not recover automatically.
+     */
+    private void initializeNewClient() {
+      if (jedis != null) {
+        try {
+          jedis.close();
+        } catch (JedisConnectionException e) {
+          // pass
+        }
+      }
+      jedis = new Jedis(uri.get());
     }
   }
 

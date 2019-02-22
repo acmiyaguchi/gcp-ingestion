@@ -24,7 +24,8 @@ in the Structured Ingestion pipeline.
 1. Consume messages from Google Cloud PubSub raw topic
 1. Decode the body from base64, optionally gzip, and JSON
 1. Validate the schema of the body
-1. Perform GeoIP lookup and drop `x_forwarded_for` and `remote_addr`
+1. Perform GeoIP lookup and drop `x_forwarded_for` and `remote_addr` and
+   optionally `geo_city` based on population
 1. Extract user agent information and drop `user_agent`
 1. Add metadata fields to message
 1. Deduplicate message by `docId`
@@ -43,10 +44,10 @@ successful delivery to PubSub.
 ### Decoding Errors
 
 All messages that are rejected at any step of the Data Flow above will be
-forwarded to a PubSub error topic for backfill and monitoring purposes
-except for duplicate messages. If we determine that a message has already
-been successfully processed based on `docId`, we increment a counter and drop
-the message.
+forwarded to a PubSub error topic for backfill and monitoring purposes.
+If we determine that a message has already been successfully processed
+based on `docId`, we drop the duplicated body and publish just the metadata
+to the error topic.
 
 #### Error message schema
 
