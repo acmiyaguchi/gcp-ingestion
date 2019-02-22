@@ -37,7 +37,17 @@ public enum OutputType {
     public Write write(SinkOptions.Parsed options) {
       return new FileOutput(options.getOutput(), options.getOutputFileFormat(),
           options.getParsedWindowDuration(), options.getOutputNumShards(),
-          options.getOutputFileCompression(), options.getInputType(), options.getSchemaLocation());
+          options.getOutputFileCompression(), options.getInputType());
+    }
+  },
+
+  avro {
+
+    /** Return a PTransform that writes to local or remote files. */
+    public Write write(SinkOptions.Parsed options) {
+      return new FileOutput(options.getOutput(), options.getParsedWindowDuration(),
+          options.getOutputNumShards(), options.getOutputFileCompression(), options.getInputType(),
+          options.getSchemaLocation());
     }
   },
 
