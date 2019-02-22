@@ -46,6 +46,23 @@ public enum OutputFileFormat {
     public String suffix() {
       return ".ndjson";
     }
+  },
+
+  avro {
+
+    /** Return this PubsubMessage encoded as a JSON string. */
+    public String encodeSingleMessage(PubsubMessage message) {
+      try {
+        return Json.asString(message);
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }
+
+    /** Return the appropriate file format suffix for Avro. */
+    public String suffix() {
+      return ".avro";
+    }
   };
 
   /** Return a PTransform that encodes PubsubMessages to String. */
