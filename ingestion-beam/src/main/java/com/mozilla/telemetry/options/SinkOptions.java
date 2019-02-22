@@ -47,7 +47,7 @@ public interface SinkOptions extends PipelineOptions {
   void setOutputType(OutputType value);
 
   @Description("Location of schemas for avro")
-  @Default.Enum("file")
+  @Default.Enum("avro")
   InputFileFormat getSchemaLocation();
 
   void setSchemaLocation(InputFileFormat value);

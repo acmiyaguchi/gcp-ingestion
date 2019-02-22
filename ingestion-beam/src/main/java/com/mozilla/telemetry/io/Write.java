@@ -105,6 +105,73 @@ public abstract class Write
     private final ValueProvider<Integer> numShards;
     private final Compression compression;
     private final InputType inputType;
+
+    /** Public constructor. */
+    public FileOutput(ValueProvider<String> outputPrefix, OutputFileFormat format,
+        Duration windowDuration, ValueProvider<Integer> numShards, Compression compression,
+        InputType inputType) {
+      this.outputPrefix = outputPrefix;
+      this.format = format;
+      this.windowDuration = windowDuration;
+      this.numShards = numShards;
+      this.compression = compression;
+      this.inputType = inputType;
+    }
+
+    @Override
+    public WithErrors.Result<PDone> expand(PCollection<PubsubMessage> input) {
+      ValueProvider<DynamicPathTemplate> pathTemplate = NestedValueProvider.of(outputPrefix,
+          DynamicPathTemplate::new);
+      ValueProvider<String> staticPrefix = NestedValueProvider.of(pathTemplate,
+          value -> value.staticPrefix);
+
+      FileIO.Write<List<String>, PubsubMessage> write = FileIO
+          .<List<String>, PubsubMessage>writeDynamic()
+          // We can't pass the attribute map to by() directly since MapCoder isn't
+          // deterministic;
+          // instead, we extract an ordered list of the needed placeholder values.
+          // That list is later available to withNaming() to determine output location.
+          .by(message -> pathTemplate.get()
+              .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap())))
+          .withDestinationCoder(ListCoder.of(StringUtf8Coder.of())) //
+          .withCompression(compression) //
+          .via(Contextful.fn(format::encodeSingleMessage), TextIO.sink()) //
+          .to(staticPrefix) //
+          .withNaming(placeholderValues -> FileIO.Write.defaultNaming(
+              pathTemplate.get().replaceDynamicPart(placeholderValues), format.suffix()));
+
+      if (inputType == InputType.pubsub) {
+        // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
+        // need to be careful to pass this only for streaming input (where runner-determined
+        // sharding is not an option).
+        write = write.withNumShards(numShards);
+      }
+
+      input //
+          .apply(Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
+              // We allow lateness up to the maximum Cloud Pub/Sub retention of 7 days documented in
+              // https://cloud.google.com/pubsub/docs/subscriber
+              .withAllowedLateness(Duration.standardDays(7)) //
+              .discardingFiredPanes())
+          .apply(write);
+      return WithErrors.Result.of(PDone.in(input.getPipeline()),
+          EmptyErrors.in(input.getPipeline()));
+    }
+  }
+
+  /**
+   * Implementation of writing to local or remote files.
+   *
+   * <p>For details of the intended behavior for file paths, see:
+   * https://github.com/mozilla/gcp-ingestion/tree/master/ingestion-beam#output-path-specification
+   */
+  public static class AvroOutput extends Write {
+
+    private final ValueProvider<String> outputPrefix;
+    private final Duration windowDuration;
+    private final ValueProvider<Integer> numShards;
+    private final Compression compression;
+    private final InputType inputType;
     private final AvroSchemaStore schemaStore;
 
     private class RecordFormatter implements AvroIO.RecordFormatter<String> {
@@ -117,11 +184,10 @@ public abstract class Write
     }
 
     /** Public constructor. */
-    public FileOutput(ValueProvider<String> outputPrefix, OutputFileFormat format,
-        Duration windowDuration, ValueProvider<Integer> numShards, Compression compression,
-        InputType inputType, ValueProvider<String> schemasLocation) {
+    public AvroOutput(ValueProvider<String> outputPrefix, Duration windowDuration,
+        ValueProvider<Integer> numShards, Compression compression, InputType inputType,
+        ValueProvider<String> schemasLocation) {
       this.outputPrefix = outputPrefix;
-      this.format = format;
       this.windowDuration = windowDuration;
       this.numShards = numShards;
       this.compression = compression;
@@ -136,42 +202,23 @@ public abstract class Write
       ValueProvider<String> staticPrefix = NestedValueProvider.of(pathTemplate,
           value -> value.staticPrefix);
 
-      FileIO.Write<List<String>, PubsubMessage> write;
+      FileIO.Write<List<String>, PubsubMessage> write = FileIO
+          .<List<String>, PubsubMessage>writeDynamic()
+          .by(message -> pathTemplate.get()
+              .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap())))
+          .withDestinationCoder(ListCoder.of(StringUtf8Coder.of())) //
+          .withCompression(compression) //
+          .via(Contextful.fn(message -> AvroIO.sinkViaGenericRecords(
+              schemaStore.getSchema(message.getAttributeMap()), new RecordFormatter()))) //
+          .to(staticPrefix) //
+          .withNaming(placeholderValues -> FileIO.Write
+              .defaultNaming(pathTemplate.get().replaceDynamicPart(placeholderValues), ".avro"));
 
-      if (format == OutputFileFormat.avro) {
-
-        write = FileIO.<List<String>, PubsubMessage>writeDynamic()
-            .by(message -> pathTemplate.get()
-                .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap())))
-            .withDestinationCoder(ListCoder.of(StringUtf8Coder.of())) //
-            .withCompression(compression) //
-            .via(Contextful.fn(format::encodeSingleMessage),
-                Contextful.fn(message -> AvroIO.sinkViaGenericRecords(
-                    schemaStore.getSchema(message.getAttributeMap()), new RecordFormatter()))) //
-            .to(staticPrefix) //
-            .withNaming(placeholderValues -> FileIO.Write.defaultNaming(
-                pathTemplate.get().replaceDynamicPart(placeholderValues), format.suffix()));
-      } else {
-        write = FileIO.<List<String>, PubsubMessage>writeDynamic()
-            // We can't pass the attribute map to by() directly since MapCoder isn't
-            // deterministic;
-            // instead, we extract an ordered list of the needed placeholder values.
-            // That list is later available to withNaming() to determine output location.
-            .by(message -> pathTemplate.get()
-                .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap())))
-            .withDestinationCoder(ListCoder.of(StringUtf8Coder.of())) //
-            .withCompression(compression) //
-            .via(Contextful.fn(format::encodeSingleMessage), TextIO.sink()) //
-            .to(staticPrefix) //
-            .withNaming(placeholderValues -> FileIO.Write.defaultNaming(
-                pathTemplate.get().replaceDynamicPart(placeholderValues), format.suffix()));
-
-        if (inputType == InputType.pubsub) {
-          // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
-          // need to be careful to pass this only for streaming input (where runner-determined
-          // sharding is not an option).
-          write = write.withNumShards(numShards);
-        }
+      if (inputType == InputType.pubsub) {
+        // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
+        // need to be careful to pass this only for streaming input (where runner-determined
+        // sharding is not an option).
+        write = write.withNumShards(numShards);
       }
 
       input //
