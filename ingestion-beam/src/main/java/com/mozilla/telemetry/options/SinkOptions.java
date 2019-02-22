@@ -46,6 +46,12 @@ public interface SinkOptions extends PipelineOptions {
 
   void setOutputType(OutputType value);
 
+  @Description("Location of schemas for avro")
+  @Default.Enum("file")
+  InputFileFormat getSchemaLocation();
+
+  void setSchemaLocation(InputFileFormat value);
+
   @Description("Method of writing to BigQuery")
   @Default.Enum("file_loads")
   BigQueryWriteMethod getBqWriteMethod();

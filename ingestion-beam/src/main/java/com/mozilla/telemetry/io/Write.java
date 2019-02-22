@@ -9,6 +9,7 @@ import com.google.api.services.bigquery.model.TableRow;
 import com.mozilla.telemetry.options.BigQueryWriteMethod;
 import com.mozilla.telemetry.options.InputType;
 import com.mozilla.telemetry.options.OutputFileFormat;
+import com.mozilla.telemetry.schemas.AvroSchemaStore;
 import com.mozilla.telemetry.transforms.CompressPayload;
 import com.mozilla.telemetry.transforms.LimitPayloadSize;
 import com.mozilla.telemetry.transforms.PubsubConstraints;
@@ -16,14 +17,24 @@ import com.mozilla.telemetry.transforms.PubsubMessageToTableRow;
 import com.mozilla.telemetry.transforms.WithErrors;
 import com.mozilla.telemetry.util.DerivedAttributesMap;
 import com.mozilla.telemetry.util.DynamicPathTemplate;
+
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.apache.avro.generic.GenericDatumReader;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.io.DatumReader;
+import org.apache.avro.io.Decoder;
+import org.apache.avro.io.DecoderFactory;
+import org.apache.avro.Schema;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.Compression;
+import org.apache.beam.sdk.io.AvroIO;
 import org.apache.beam.sdk.io.FileIO;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
@@ -94,17 +105,28 @@ public abstract class Write
     private final ValueProvider<Integer> numShards;
     private final Compression compression;
     private final InputType inputType;
+    private final AvroSchemaStore schemaStore;
+
+    private class RecordFormatter implements AvroIO.RecordFormatter<String> {
+
+      public GenericRecord formatRecord(String element, Schema schema) {
+        DatumReader<GenericRecord> reader = new GenericDatumReader<GenericRecord>(schema);
+        Decoder decoder = DecoderFactory.get().jsonDecoder(schema, element);
+        return reader.read(null, decoder);
+      }
+    }
 
     /** Public constructor. */
     public FileOutput(ValueProvider<String> outputPrefix, OutputFileFormat format,
         Duration windowDuration, ValueProvider<Integer> numShards, Compression compression,
-        InputType inputType) {
+        InputType inputType, ValueProvider<String> schemasLocation) {
       this.outputPrefix = outputPrefix;
       this.format = format;
       this.windowDuration = windowDuration;
       this.numShards = numShards;
       this.compression = compression;
       this.inputType = inputType;
+      this.schemaStore = AvroSchemaStore.of(schemasLocation);
     }
 
     @Override
@@ -114,26 +136,42 @@ public abstract class Write
       ValueProvider<String> staticPrefix = NestedValueProvider.of(pathTemplate,
           value -> value.staticPrefix);
 
-      FileIO.Write<List<String>, PubsubMessage> write = FileIO
-          .<List<String>, PubsubMessage>writeDynamic()
-          // We can't pass the attribute map to by() directly since MapCoder isn't
-          // deterministic;
-          // instead, we extract an ordered list of the needed placeholder values.
-          // That list is later available to withNaming() to determine output location.
-          .by(message -> pathTemplate.get()
-              .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap())))
-          .withDestinationCoder(ListCoder.of(StringUtf8Coder.of())) //
-          .withCompression(compression) //
-          .via(Contextful.fn(format::encodeSingleMessage), TextIO.sink()) //
-          .to(staticPrefix) //
-          .withNaming(placeholderValues -> FileIO.Write.defaultNaming(
-              pathTemplate.get().replaceDynamicPart(placeholderValues), format.suffix()));
+      FileIO.Write<List<String>, PubsubMessage> write;
 
-      if (inputType == InputType.pubsub) {
-        // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
-        // need to be careful to pass this only for streaming input (where runner-determined
-        // sharding is not an option).
-        write = write.withNumShards(numShards);
+      if (format == OutputFileFormat.avro) {
+
+        write = FileIO.<List<String>, PubsubMessage>writeDynamic()
+            .by(message -> pathTemplate.get()
+                .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap())))
+            .withDestinationCoder(ListCoder.of(StringUtf8Coder.of())) //
+            .withCompression(compression) //
+            .via(Contextful.fn(format::encodeSingleMessage),
+                Contextful.fn(message -> AvroIO.sinkViaGenericRecords(
+                    schemaStore.getSchema(message.getAttributeMap()), new RecordFormatter()))) //
+            .to(staticPrefix) //
+            .withNaming(placeholderValues -> FileIO.Write.defaultNaming(
+                pathTemplate.get().replaceDynamicPart(placeholderValues), format.suffix()));
+      } else {
+        write = FileIO.<List<String>, PubsubMessage>writeDynamic()
+            // We can't pass the attribute map to by() directly since MapCoder isn't
+            // deterministic;
+            // instead, we extract an ordered list of the needed placeholder values.
+            // That list is later available to withNaming() to determine output location.
+            .by(message -> pathTemplate.get()
+                .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap())))
+            .withDestinationCoder(ListCoder.of(StringUtf8Coder.of())) //
+            .withCompression(compression) //
+            .via(Contextful.fn(format::encodeSingleMessage), TextIO.sink()) //
+            .to(staticPrefix) //
+            .withNaming(placeholderValues -> FileIO.Write.defaultNaming(
+                pathTemplate.get().replaceDynamicPart(placeholderValues), format.suffix()));
+
+        if (inputType == InputType.pubsub) {
+          // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
+          // need to be careful to pass this only for streaming input (where runner-determined
+          // sharding is not an option).
+          write = write.withNumShards(numShards);
+        }
       }
 
       input //

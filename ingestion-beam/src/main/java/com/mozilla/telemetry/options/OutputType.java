@@ -37,7 +37,7 @@ public enum OutputType {
     public Write write(SinkOptions.Parsed options) {
       return new FileOutput(options.getOutput(), options.getOutputFileFormat(),
           options.getParsedWindowDuration(), options.getOutputNumShards(),
-          options.getOutputFileCompression(), options.getInputType());
+          options.getOutputFileCompression(), options.getInputType(), options.getSchemaLocation());
     }
   },
 
