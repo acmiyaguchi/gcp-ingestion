@@ -17,8 +17,10 @@ import com.mozilla.telemetry.transforms.PubsubMessageToTableRow;
 import com.mozilla.telemetry.transforms.WithErrors;
 import com.mozilla.telemetry.util.DerivedAttributesMap;
 import com.mozilla.telemetry.util.DynamicPathTemplate;
+import com.mozilla.telemetry.util.Json;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -174,15 +176,32 @@ public abstract class Write
     private final InputType inputType;
     private final AvroSchemaStore schemaStore;
 
-    private class RecordFormatter implements AvroIO.RecordFormatter<String> {
+    private class RecordFormatter implements AvroIO.RecordFormatter<PubsubMessage> {
 
-      public GenericRecord formatRecord(String element, Schema schema) {
+      public GenericRecord formatRecord(PubsubMessage element, Schema schema) {
+        String message;
+        try {
+          message = Json.asString(element);
+        } catch (IOException e) {
+          // We rely on PubsubMessage construction to fail on invalid data, so we should never
+          // see a non-encodable PubsubMessage here and we let the exception bubble up if it happens.
+          throw new UncheckedIOException(e);
+        }
         DatumReader<GenericRecord> reader = new GenericDatumReader<GenericRecord>(schema);
-        Decoder decoder = DecoderFactory.get().jsonDecoder(schema, element);
+        Decoder decoder = DecoderFactory.get().jsonDecoder(schema, message);
         return reader.read(null, decoder);
       }
     }
 
+    private class Destination {
+      public final Schema schema;
+      public final List<String> placeholders;
+      public Destination(Schema schema, List<String> placeholders) {
+        this.schema = schema;
+        this.placeholders = placeholders;
+      }
+    }
+  
     /** Public constructor. */
     public AvroOutput(ValueProvider<String> outputPrefix, Duration windowDuration,
         ValueProvider<Integer> numShards, Compression compression, InputType inputType,
@@ -202,24 +221,23 @@ public abstract class Write
       ValueProvider<String> staticPrefix = NestedValueProvider.of(pathTemplate,
           value -> value.staticPrefix);
 
-      FileIO.Write<List<String>, PubsubMessage> write = FileIO
-          .<List<String>, PubsubMessage>writeDynamic()
-          .by(message -> pathTemplate.get()
-              .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap())))
-          .withDestinationCoder(ListCoder.of(StringUtf8Coder.of())) //
-          .withCompression(compression) //
-          .via(Contextful.fn(message -> AvroIO.sinkViaGenericRecords(
-              schemaStore.getSchema(message.getAttributeMap()), new RecordFormatter()))) //
-          .to(staticPrefix) //
-          .withNaming(placeholderValues -> FileIO.Write
-              .defaultNaming(pathTemplate.get().replaceDynamicPart(placeholderValues), ".avro"));
+      FileIO.Write<Destination, PubsubMessage> write = FileIO.<Destination, PubsubMessage>writeDynamic()
+            .by(message -> new Destination(
+                schemaStore.getSchema(message.getAttributeMap()),
+                pathTemplate.get().extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap()))
+            ))
+            .withCompression(compression) //
+            .via(Contextful.fn(dest -> AvroIO.sinkViaGenericRecords(dest.schema, new RecordFormatter()))) //
+            .to(staticPrefix) //
+            .withNaming(dest -> FileIO.Write.defaultNaming(
+                pathTemplate.get().replaceDynamicPart(dest.placeholders), ".avro"));
 
-      if (inputType == InputType.pubsub) {
-        // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
-        // need to be careful to pass this only for streaming input (where runner-determined
-        // sharding is not an option).
-        write = write.withNumShards(numShards);
-      }
+        if (inputType == InputType.pubsub) {
+          // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
+          // need to be careful to pass this only for streaming input (where runner-determined
+          // sharding is not an option).
+          write = write.withNumShards(numShards);
+        }
 
       input //
           .apply(Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
