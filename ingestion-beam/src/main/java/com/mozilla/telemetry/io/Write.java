@@ -223,7 +223,7 @@ public abstract class Write
     }
 
     class PubsubMessageDynamicAvroDestinations
-        extends DynamicAvroDestinations<PubsubMessage, String, GenericRecord> {
+        extends DynamicAvroDestinations<PubsubMessage, Map<String, String>, GenericRecord> {
 
       final PCollectionView<AvroSchemaStore> schemaStore;
       final RecordFormatter formatter;
@@ -238,28 +238,31 @@ public abstract class Write
       }
 
       public GenericRecord formatRecord(PubsubMessage message) {
-        // TODO: unhandled exception
-        Schema schema = sideInput(schemaStore).getSchema(message.getAttributeMap());
+        Schema schema = getSchema(getDestination(message));
         return formatter.formatRecord(message, schema);
       }
 
-      public Schema getSchema(String schemaPath) {
-        // TODO: unhandled exception
-        return sideInput(schemaStore).getSchema(schemaPath);
+      public Schema getSchema(Map<String, String> attributes) {
+        Schema schema;
+        try {
+          schema = sideInput(schemaStore).getSchema(attributes);
+        } catch (SchemaNotFoundException e) {
+          // create a record containing a string
+          schema = Schema.create(Schema.Type.STRING);
+        }
+        return schema;
       }
 
-      public String getDestination(PubsubMessage message) {
-        return StringSubstitutor.replace("${document_namespace}/${document_type}/"
-            + "${document_type}.${document_version}.schema.json", message.getAttributeMap());
+      public Map<String, String> getDestination(PubsubMessage message) {
+        return DerivedAttributesMap.of(message.getAttributeMap());
       }
 
-      public String getDefaultDestination() {
-        return "";
+      public Map<String, String> getDefaultDestination() {
+        return null;
       }
 
-      public FilenamePolicy getFilenamePolicy(PubsubMessage message) {
-        List<String> placeholders = pathTemplate.get()
-            .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap()));
+      public FilenamePolicy getFilenamePolicy(Map<String, String> destination) {
+        List<String> placeholders = pathTemplate.get().extractValuesFrom(destination);
         ResourceId baseFilename = FileSystems.matchNewResource(staticPrefix.get(), true);
         ResourceId filename = baseFilename.resolve(
             pathTemplate.get().replaceDynamicPart(placeholders),
@@ -271,11 +274,6 @@ public abstract class Write
 
     @Override
     public WithErrors.Result<PDone> expand(PCollection<PubsubMessage> input) {
-
-      // first create a pcollection of path to pubsub message
-      // then create a view of path to schemas
-      // use this as side input when writing
-
       PCollectionView<AvroSchemaStore> schemaSideInput = input.getPipeline()
           .apply(Create.of(schemaStore)).apply(View.<AvroSchemaStore>asSingleton());
 
