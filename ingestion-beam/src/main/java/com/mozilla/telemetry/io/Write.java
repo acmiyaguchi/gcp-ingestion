@@ -20,6 +20,7 @@ import com.mozilla.telemetry.util.DerivedAttributesMap;
 import com.mozilla.telemetry.util.DynamicPathTemplate;
 import com.mozilla.telemetry.util.Json;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
@@ -74,6 +75,7 @@ import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PDone;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
+import org.apache.beam.vendor.guava.v20_0.com.google.common.io.Files;
 import org.apache.commons.text.StringSubstitutor;
 import org.joda.time.Duration;
 
@@ -277,6 +279,9 @@ public abstract class Write
       PCollectionView<AvroSchemaStore> schemaSideInput = input.getPipeline()
           .apply(Create.of(schemaStore)).apply(View.<AvroSchemaStore>asSingleton());
 
+      // When working with DynamicAvroDestinations,
+      File tempDirectory = Files.createTempDir();
+      ResourceId tempResource = FileSystems.matchNewResource(tempDirectory.getAbsolutePath(), true);
       input //
           .apply(Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
               // We allow lateness up to the maximum Cloud Pub/Sub retention of 7 days documented in
@@ -284,7 +289,9 @@ public abstract class Write
               .withAllowedLateness(Duration.standardDays(7)) //
               .discardingFiredPanes())
           .apply(AvroIO.<PubsubMessage>writeCustomTypeToGenericRecords()
-              .to(new PubsubMessageDynamicAvroDestinations(schemaSideInput)));
+              .to(new PubsubMessageDynamicAvroDestinations(schemaSideInput))
+                  .withTempDirectory(tempResource)
+          );
       return WithErrors.Result.of(PDone.in(input.getPipeline()),
           EmptyErrors.in(input.getPipeline()));
     }
