@@ -40,14 +40,13 @@ public interface SinkOptions extends PipelineOptions {
 
   void setInputFileFormat(InputFileFormat value);
 
-  @Description("Type of --output; must be one of [pubsub, file, stdout]")
+  @Description("Type of --output; must be one of [pubsub, file, avro, stdout]")
   @Default.Enum("file")
   OutputType getOutputType();
 
   void setOutputType(OutputType value);
 
   @Description("Location of schemas for avro")
-  @Default.Enum("avro")
   ValueProvider<String> getSchemaLocation();
 
   void setSchemaLocation(ValueProvider<String> value);
