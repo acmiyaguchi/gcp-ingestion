@@ -10,6 +10,7 @@ import com.mozilla.telemetry.options.BigQueryWriteMethod;
 import com.mozilla.telemetry.options.InputType;
 import com.mozilla.telemetry.options.OutputFileFormat;
 import com.mozilla.telemetry.schemas.AvroSchemaStore;
+import com.mozilla.telemetry.schemas.SchemaNotFoundException;
 import com.mozilla.telemetry.transforms.CompressPayload;
 import com.mozilla.telemetry.transforms.LimitPayloadSize;
 import com.mozilla.telemetry.transforms.PubsubConstraints;
@@ -22,6 +23,7 @@ import com.mozilla.telemetry.util.Json;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,9 +38,13 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.Compression;
+import org.apache.beam.sdk.io.DefaultFilenamePolicy;
+import org.apache.beam.sdk.io.DefaultFilenamePolicy.Params;
+import org.apache.beam.sdk.io.DynamicAvroDestinations;
 import org.apache.beam.sdk.io.AvroIO;
 import org.apache.beam.sdk.io.FileIO;
 import org.apache.beam.sdk.io.TextIO;
+import org.apache.beam.sdk.io.FileBasedSink.FilenamePolicy;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryInsertError;
 import org.apache.beam.sdk.io.gcp.bigquery.InsertRetryPolicy;
@@ -176,32 +182,6 @@ public abstract class Write
     private final InputType inputType;
     private final AvroSchemaStore schemaStore;
 
-    private class RecordFormatter implements AvroIO.RecordFormatter<PubsubMessage> {
-
-      public GenericRecord formatRecord(PubsubMessage element, Schema schema) {
-        String message;
-        try {
-          message = Json.asString(element);
-        } catch (IOException e) {
-          // We rely on PubsubMessage construction to fail on invalid data, so we should never
-          // see a non-encodable PubsubMessage here and we let the exception bubble up if it happens.
-          throw new UncheckedIOException(e);
-        }
-        DatumReader<GenericRecord> reader = new GenericDatumReader<GenericRecord>(schema);
-        Decoder decoder = DecoderFactory.get().jsonDecoder(schema, message);
-        return reader.read(null, decoder);
-      }
-    }
-
-    private class Destination {
-      public final Schema schema;
-      public final List<String> placeholders;
-      public Destination(Schema schema, List<String> placeholders) {
-        this.schema = schema;
-        this.placeholders = placeholders;
-      }
-    }
-  
     /** Public constructor. */
     public AvroOutput(ValueProvider<String> outputPrefix, Duration windowDuration,
         ValueProvider<Integer> numShards, Compression compression, InputType inputType,
@@ -214,30 +194,81 @@ public abstract class Write
       this.schemaStore = AvroSchemaStore.of(schemasLocation);
     }
 
-    @Override
-    public WithErrors.Result<PDone> expand(PCollection<PubsubMessage> input) {
+    /** A functor that constructs a GenericRecord from a PubsubMessage. */
+    private class RecordFormatter implements AvroIO.RecordFormatter<PubsubMessage> {
+
+      public GenericRecord formatRecord(PubsubMessage element, Schema schema) {
+        String message;
+        GenericRecord result;
+        try {
+          message = Json.asString(element);
+          DatumReader<GenericRecord> reader = new GenericDatumReader<GenericRecord>(schema);
+          Decoder decoder = DecoderFactory.get().jsonDecoder(schema, message);
+          result = reader.read(null, decoder);
+        } catch (IOException e) {
+          // We rely on PubsubMessage construction to fail on invalid data, so we should
+          // never
+          // see a non-encodable PubsubMessage here and we let the exception bubble up if
+          // it happens.
+          throw new UncheckedIOException(e);
+        }
+        return result;
+      }
+    }
+
+    class PubsubMessageDynamicAvroDestinations
+        extends DynamicAvroDestinations<PubsubMessage, List<String>, GenericRecord> {
+
+      final PCollectionView<AvroSchemaStore> schemaStore;
+      final RecordFormatter formatter;
       ValueProvider<DynamicPathTemplate> pathTemplate = NestedValueProvider.of(outputPrefix,
           DynamicPathTemplate::new);
       ValueProvider<String> staticPrefix = NestedValueProvider.of(pathTemplate,
           value -> value.staticPrefix);
 
-      FileIO.Write<Destination, PubsubMessage> write = FileIO.<Destination, PubsubMessage>writeDynamic()
-            .by(message -> new Destination(
-                schemaStore.getSchema(message.getAttributeMap()),
-                pathTemplate.get().extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap()))
-            ))
-            .withCompression(compression) //
-            .via(Contextful.fn(dest -> AvroIO.sinkViaGenericRecords(dest.schema, new RecordFormatter()))) //
-            .to(staticPrefix) //
-            .withNaming(dest -> FileIO.Write.defaultNaming(
-                pathTemplate.get().replaceDynamicPart(dest.placeholders), ".avro"));
+      public PubsubMessageDynamicAvroDestinations(PCollectionView<AvroSchemaStore> schemaStore) {
+        this.schemaStore = schemaStore;
+        this.formatter = new RecordFormatter();
+      }
 
-        if (inputType == InputType.pubsub) {
-          // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
-          // need to be careful to pass this only for streaming input (where runner-determined
-          // sharding is not an option).
-          write = write.withNumShards(numShards);
-        }
+      public GenericRecord formatRecord(PubsubMessage message) {
+        return formatter.formatRecord(message, getSchema(message.getAttributeMap()));
+      }
+
+      public Schema getSchema(Map<String, String> attributes) {
+        // TODO: unhandled exception
+        return sideInput(schemaStore).getSchema(attributes);
+      }
+
+      public List<String> getDestination(PubsubMessage message) {
+        return pathTemplate.get()
+            .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap()));
+      }
+
+      public List<String> getDefaultDestination() {
+        return Collections.emptyList();
+      }
+
+      public FilenamePolicy getFilenamePolicy(PubsubMessage message) {
+        return DefaultFilenamePolicy.fromParams(
+          new Params().withBaseFilename(pathTemplate.get().replaceDynamicPart(getDestination(message)))
+          .withSuffix(".avro")
+        );
+      }
+    }
+
+    @Override
+    public WithErrors.Result<PDone> expand(PCollection<PubsubMessage> input) {
+
+
+      // first create a pcollection of path to pubsub message
+      // then create a view of path to schemas
+      // use this as side input when writing
+
+      PCollectionView<AvroSchemaStore> schemaSideInput = input
+        .getPipeline()
+        .apply(Create.of(schemaStore))
+        .apply(View.<AvroSchemaStore>asSingleton());
 
       input //
           .apply(Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
@@ -245,7 +276,8 @@ public abstract class Write
               // https://cloud.google.com/pubsub/docs/subscriber
               .withAllowedLateness(Duration.standardDays(7)) //
               .discardingFiredPanes())
-          .apply(write);
+          .apply(AvroIO.<PubsubMessage>writeCustomTypeToGenericRecords()
+          .to(new PubsubMessageDynamicAvroDestinations(schemaSideInput)));
       return WithErrors.Result.of(PDone.in(input.getPipeline()),
           EmptyErrors.in(input.getPipeline()));
     }
