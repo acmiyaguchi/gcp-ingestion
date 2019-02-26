@@ -47,11 +47,12 @@ public class SinkAvroTest {
   @Test
   public void testJsonToAvro() {
     String input = Resources.getResource("testdata/avro-message-single-doctype.ndjson").getPath();
+    String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
     String output = outputPath + "/out";
 
     Sink.main(new String[] { "--inputFileFormat=json", "--inputType=file", "--input=" + input,
-        "--outputFileFormat=text", "--outputType=avro", "--output=" + output,
-        "--outputFileCompression=UNCOMPRESSED" });
+        "--outputType=avro", "--output=" + output,
+        "--outputFileCompression=UNCOMPRESSED", "--schemaLocation=" +  schemas});
 
     // TODO: assert properties
   }
