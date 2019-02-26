@@ -43,8 +43,11 @@ import org.apache.beam.sdk.io.DefaultFilenamePolicy.Params;
 import org.apache.beam.sdk.io.DynamicAvroDestinations;
 import org.apache.beam.sdk.io.AvroIO;
 import org.apache.beam.sdk.io.FileIO;
+import org.apache.beam.sdk.io.FileSystems;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.FileBasedSink.FilenamePolicy;
+import org.apache.beam.sdk.io.fs.ResourceId;
+import org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryInsertError;
 import org.apache.beam.sdk.io.gcp.bigquery.InsertRetryPolicy;
@@ -60,15 +63,18 @@ import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.Flatten;
 import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.PTransform;
+import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.Window;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
+import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PDone;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
+import org.apache.commons.text.StringSubstitutor;
 import org.joda.time.Duration;
 
 /**
@@ -217,7 +223,7 @@ public abstract class Write
     }
 
     class PubsubMessageDynamicAvroDestinations
-        extends DynamicAvroDestinations<PubsubMessage, List<String>, GenericRecord> {
+        extends DynamicAvroDestinations<PubsubMessage, String, GenericRecord> {
 
       final PCollectionView<AvroSchemaStore> schemaStore;
       final RecordFormatter formatter;
@@ -232,43 +238,46 @@ public abstract class Write
       }
 
       public GenericRecord formatRecord(PubsubMessage message) {
-        return formatter.formatRecord(message, getSchema(message.getAttributeMap()));
-      }
-
-      public Schema getSchema(Map<String, String> attributes) {
         // TODO: unhandled exception
-        return sideInput(schemaStore).getSchema(attributes);
+        Schema schema = sideInput(schemaStore).getSchema(message.getAttributeMap());
+        return formatter.formatRecord(message, schema);
       }
 
-      public List<String> getDestination(PubsubMessage message) {
-        return pathTemplate.get()
-            .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap()));
+      public Schema getSchema(String schemaPath) {
+        // TODO: unhandled exception
+        return sideInput(schemaStore).getSchema(schemaPath);
       }
 
-      public List<String> getDefaultDestination() {
-        return Collections.emptyList();
+      public String getDestination(PubsubMessage message) {
+        return StringSubstitutor.replace("${document_namespace}/${document_type}/"
+            + "${document_type}.${document_version}.schema.json", message.getAttributeMap());
+      }
+
+      public String getDefaultDestination() {
+        return "";
       }
 
       public FilenamePolicy getFilenamePolicy(PubsubMessage message) {
-        return DefaultFilenamePolicy.fromParams(
-          new Params().withBaseFilename(pathTemplate.get().replaceDynamicPart(getDestination(message)))
-          .withSuffix(".avro")
-        );
+        List<String> placeholders = pathTemplate.get()
+            .extractValuesFrom(DerivedAttributesMap.of(message.getAttributeMap()));
+        ResourceId baseFilename = FileSystems.matchNewResource(staticPrefix.get(), true);
+        ResourceId filename = baseFilename.resolve(
+            pathTemplate.get().replaceDynamicPart(placeholders),
+            StandardResolveOptions.RESOLVE_FILE);
+        return DefaultFilenamePolicy
+            .fromParams(new Params().withBaseFilename(filename).withSuffix(".avro"));
       }
     }
 
     @Override
     public WithErrors.Result<PDone> expand(PCollection<PubsubMessage> input) {
 
-
       // first create a pcollection of path to pubsub message
       // then create a view of path to schemas
       // use this as side input when writing
 
-      PCollectionView<AvroSchemaStore> schemaSideInput = input
-        .getPipeline()
-        .apply(Create.of(schemaStore))
-        .apply(View.<AvroSchemaStore>asSingleton());
+      PCollectionView<AvroSchemaStore> schemaSideInput = input.getPipeline()
+          .apply(Create.of(schemaStore)).apply(View.<AvroSchemaStore>asSingleton());
 
       input //
           .apply(Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
@@ -277,7 +286,7 @@ public abstract class Write
               .withAllowedLateness(Duration.standardDays(7)) //
               .discardingFiredPanes())
           .apply(AvroIO.<PubsubMessage>writeCustomTypeToGenericRecords()
-          .to(new PubsubMessageDynamicAvroDestinations(schemaSideInput)));
+              .to(new PubsubMessageDynamicAvroDestinations(schemaSideInput)));
       return WithErrors.Result.of(PDone.in(input.getPipeline()),
           EmptyErrors.in(input.getPipeline()));
     }
