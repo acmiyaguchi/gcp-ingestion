@@ -51,8 +51,8 @@ public class SinkAvroTest {
     String output = outputPath + "/out";
 
     Sink.main(new String[] { "--inputFileFormat=json", "--inputType=file", "--input=" + input,
-        "--outputType=avro", "--output=" + output,
-        "--outputFileCompression=UNCOMPRESSED", "--schemaLocation=" +  schemas});
+        "--outputType=avro", "--output=" + output, "--outputFileCompression=UNCOMPRESSED",
+        "--schemaLocation=" + schemas });
 
     // TODO: assert properties
   }

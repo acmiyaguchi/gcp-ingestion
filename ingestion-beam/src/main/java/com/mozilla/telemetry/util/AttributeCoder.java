@@ -13,36 +13,41 @@ import org.apache.beam.sdk.coders.MapCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.values.TypeDescriptor;
 
-public class AttributeCoder extends CustomCoder<SortedMap<String, String>> {
-    private static final Coder<Map<String, String>> coder =
-            MapCoder.of(StringUtf8Coder.of(), StringUtf8Coder.of());
+public class AttributeCoder extends CustomCoder<TreeMap<String, String>> {
 
-    public static Coder<SortedMap<String, String>> of(TypeDescriptor<SortedMap<String, String>> ignored) {
-        return of();
-    }
+  private static final Coder<Map<String, String>> coder = MapCoder.of(StringUtf8Coder.of(),
+      StringUtf8Coder.of());
 
-    public static AttributeCoder of() {
-        return new AttributeCoder();
-    }
+  public static Coder<TreeMap<String, String>> of(TypeDescriptor<TreeMap<String, String>> ignored) {
+    return of();
+  }
 
-    @Override
-    public void encode(SortedMap<String, String> value, OutputStream outStream) throws IOException {
-        encode(value, outStream, Context.NESTED);
-    }
+  public static AttributeCoder of() {
+    return new AttributeCoder();
+  }
 
-    public void encode(SortedMap<String, String> value, OutputStream outStream, Context context)
-            throws IOException {
-        coder.encode(value, outStream, context);
-    }
+  @Override
+  public void encode(TreeMap<String, String> value, OutputStream outStream) throws IOException {
+    encode(value, outStream, Context.NESTED);
+  }
 
-    @Override
-    public SortedMap<String, String> decode(InputStream inStream) throws IOException {
-        return decode(inStream, Context.NESTED);
-    }
+  public void encode(TreeMap<String, String> value, OutputStream outStream, Context context)
+      throws IOException {
+    coder.encode(value, outStream, context);
+  }
 
-    @Override
-    public SortedMap<String, String> decode(InputStream inStream, Context context) throws IOException {
-        Map<String, String> attributes = coder.decode(inStream, context);
-        return new TreeMap<>(attributes);
-    }
+  @Override
+  public TreeMap<String, String> decode(InputStream inStream) throws IOException {
+    return decode(inStream, Context.NESTED);
+  }
+
+  @Override
+  public TreeMap<String, String> decode(InputStream inStream, Context context) throws IOException {
+    Map<String, String> attributes = coder.decode(inStream, context);
+    return new TreeMap<>(attributes);
+  }
+
+  @Override
+  public void verifyDeterministic() {
+  }
 }

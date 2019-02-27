@@ -16,6 +16,7 @@ import com.mozilla.telemetry.transforms.LimitPayloadSize;
 import com.mozilla.telemetry.transforms.PubsubConstraints;
 import com.mozilla.telemetry.transforms.PubsubMessageToTableRow;
 import com.mozilla.telemetry.transforms.WithErrors;
+import com.mozilla.telemetry.util.AttributeCoder;
 import com.mozilla.telemetry.util.DerivedAttributesMap;
 import com.mozilla.telemetry.util.DynamicPathTemplate;
 import com.mozilla.telemetry.util.Json;
@@ -24,10 +25,10 @@ import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
@@ -36,6 +37,7 @@ import org.apache.avro.io.Decoder;
 import org.apache.avro.io.DecoderFactory;
 import org.apache.avro.Schema;
 import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.Compression;
@@ -76,7 +78,6 @@ import org.apache.beam.sdk.values.PDone;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
 import org.apache.beam.vendor.guava.v20_0.com.google.common.io.Files;
-import org.apache.commons.text.StringSubstitutor;
 import org.joda.time.Duration;
 
 /**
@@ -225,7 +226,7 @@ public abstract class Write
     }
 
     class PubsubMessageDynamicAvroDestinations
-        extends DynamicAvroDestinations<PubsubMessage, Map<String, String>, GenericRecord> {
+        extends DynamicAvroDestinations<PubsubMessage, TreeMap<String, String>, GenericRecord> {
 
       final PCollectionView<AvroSchemaStore> schemaStore;
       final RecordFormatter formatter;
@@ -244,7 +245,7 @@ public abstract class Write
         return formatter.formatRecord(message, schema);
       }
 
-      public Schema getSchema(Map<String, String> attributes) {
+      public Schema getSchema(TreeMap<String, String> attributes) {
         Schema schema;
         try {
           schema = sideInput(schemaStore).getSchema(attributes);
@@ -255,15 +256,17 @@ public abstract class Write
         return schema;
       }
 
-      public Map<String, String> getDestination(PubsubMessage message) {
-        return DerivedAttributesMap.of(message.getAttributeMap());
+      public TreeMap<String, String> getDestination(PubsubMessage message) {
+        TreeMap<String, String> map = new TreeMap<>();
+        map.putAll(message.getAttributeMap());
+        return map;
       }
 
-      public Map<String, String> getDefaultDestination() {
-        return null;
+      public TreeMap<String, String> getDefaultDestination() {
+        return new TreeMap<>();
       }
 
-      public FilenamePolicy getFilenamePolicy(Map<String, String> destination) {
+      public FilenamePolicy getFilenamePolicy(TreeMap<String, String> destination) {
         List<String> placeholders = pathTemplate.get().extractValuesFrom(destination);
         ResourceId baseFilename = FileSystems.matchNewResource(staticPrefix.get(), true);
         ResourceId filename = baseFilename.resolve(
@@ -271,6 +274,10 @@ public abstract class Write
             StandardResolveOptions.RESOLVE_FILE);
         return DefaultFilenamePolicy
             .fromParams(new Params().withBaseFilename(filename).withSuffix(".avro"));
+      }
+
+      public Coder<TreeMap<String, String>> getDestinationCoder() {
+        return AttributeCoder.of();
       }
     }
 
@@ -290,8 +297,7 @@ public abstract class Write
               .discardingFiredPanes())
           .apply(AvroIO.<PubsubMessage>writeCustomTypeToGenericRecords()
               .to(new PubsubMessageDynamicAvroDestinations(schemaSideInput))
-                  .withTempDirectory(tempResource)
-          );
+              .withTempDirectory(tempResource));
       return WithErrors.Result.of(PDone.in(input.getPipeline()),
           EmptyErrors.in(input.getPipeline()));
     }
