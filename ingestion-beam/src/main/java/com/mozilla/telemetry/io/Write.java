@@ -21,7 +21,6 @@ import com.mozilla.telemetry.util.DerivedAttributesMap;
 import com.mozilla.telemetry.util.DynamicPathTemplate;
 import com.mozilla.telemetry.util.Json;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
@@ -37,20 +36,12 @@ import org.apache.avro.io.Decoder;
 import org.apache.avro.io.DecoderFactory;
 import org.apache.avro.Schema;
 import org.apache.beam.sdk.Pipeline;
-import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.Compression;
-import org.apache.beam.sdk.io.DefaultFilenamePolicy;
-import org.apache.beam.sdk.io.DefaultFilenamePolicy.Params;
-import org.apache.beam.sdk.io.DynamicAvroDestinations;
 import org.apache.beam.sdk.io.AvroIO;
 import org.apache.beam.sdk.io.FileIO;
-import org.apache.beam.sdk.io.FileSystems;
 import org.apache.beam.sdk.io.TextIO;
-import org.apache.beam.sdk.io.FileBasedSink.FilenamePolicy;
-import org.apache.beam.sdk.io.fs.ResourceId;
-import org.apache.beam.sdk.io.fs.ResolveOptions.StandardResolveOptions;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryInsertError;
 import org.apache.beam.sdk.io.gcp.bigquery.InsertRetryPolicy;
@@ -66,6 +57,7 @@ import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.Flatten;
 import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.PTransform;
+import org.apache.beam.sdk.transforms.Requirements;
 import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.Window;
@@ -77,7 +69,6 @@ import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PDone;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
-import org.apache.beam.vendor.guava.v20_0.com.google.common.io.Files;
 import org.joda.time.Duration;
 
 /**
@@ -204,100 +195,73 @@ public abstract class Write
     }
 
     /** A functor that constructs a GenericRecord from a PubsubMessage. */
-    private class RecordFormatter implements AvroIO.RecordFormatter<PubsubMessage> {
+    public class RecordFormatter implements AvroIO.RecordFormatter<PubsubMessage> {
 
       public GenericRecord formatRecord(PubsubMessage element, Schema schema) {
         String message;
         GenericRecord result;
         try {
           message = Json.asString(element);
-          DatumReader<GenericRecord> reader = new GenericDatumReader<GenericRecord>(schema);
+          DatumReader<GenericRecord> reader = new GenericDatumReader<>(schema);
           Decoder decoder = DecoderFactory.get().jsonDecoder(schema, message);
           result = reader.read(null, decoder);
         } catch (IOException e) {
-          // We rely on PubsubMessage construction to fail on invalid data, so we should
-          // never
-          // see a non-encodable PubsubMessage here and we let the exception bubble up if
-          // it happens.
           throw new UncheckedIOException(e);
         }
         return result;
       }
     }
 
-    class PubsubMessageDynamicAvroDestinations
-        extends DynamicAvroDestinations<PubsubMessage, TreeMap<String, String>, GenericRecord> {
+    @Override
+    public WithErrors.Result<PDone> expand(PCollection<PubsubMessage> input) {
+      PCollectionView<AvroSchemaStore> schemaSideInput = input.getPipeline()
+          .apply(Create.of(schemaStore)).apply(View.asSingleton());
 
-      final PCollectionView<AvroSchemaStore> schemaStore;
-      final RecordFormatter formatter;
       ValueProvider<DynamicPathTemplate> pathTemplate = NestedValueProvider.of(outputPrefix,
           DynamicPathTemplate::new);
       ValueProvider<String> staticPrefix = NestedValueProvider.of(pathTemplate,
           value -> value.staticPrefix);
 
-      public PubsubMessageDynamicAvroDestinations(PCollectionView<AvroSchemaStore> schemaStore) {
-        this.schemaStore = schemaStore;
-        this.formatter = new RecordFormatter();
+      FileIO.Write<TreeMap<String, String>, PubsubMessage> write = FileIO
+          .<TreeMap<String, String>, PubsubMessage>writeDynamic() //
+          .by(message -> {
+            TreeMap<String, String> map = new TreeMap<>();
+            map.putAll(message.getAttributeMap());
+            return map;
+          }).withDestinationCoder(AttributeCoder.of()) //
+          .withCompression(compression) //
+          .via(Contextful.fn((TreeMap<String, String> dest, Contextful.Fn.Context ctx) -> {
+            Schema schema;
+            try {
+              schema = ctx.sideInput(schemaSideInput).getSchema(dest);
+            } catch (SchemaNotFoundException e) {
+              // provide a catch-all schema for incompatible document types
+              schema = Schema.create(Schema.Type.STRING);
+            }
+            return AvroIO.sinkViaGenericRecords(schema, new RecordFormatter());
+          }, Requirements.requiresSideInputs(schemaSideInput))) //
+          .to(staticPrefix) //
+          .withNaming((TreeMap<String, String> destination) -> {
+            List<String> placeholders = pathTemplate.get().extractValuesFrom(destination);
+            String concreteValues = pathTemplate.get().replaceDynamicPart(placeholders);
+            return FileIO.Write.defaultNaming(concreteValues, ".avro");
+          });
+
+      if (inputType == InputType.pubsub) {
+        // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
+        // need to be careful to pass this only for streaming input (where runner-determined
+        // sharding is not an option).
+        write = write.withNumShards(numShards);
       }
 
-      public GenericRecord formatRecord(PubsubMessage message) {
-        Schema schema = getSchema(getDestination(message));
-        return formatter.formatRecord(message, schema);
-      }
-
-      public Schema getSchema(TreeMap<String, String> attributes) {
-        Schema schema;
-        try {
-          schema = sideInput(schemaStore).getSchema(attributes);
-        } catch (SchemaNotFoundException e) {
-          // create a record containing a string
-          schema = Schema.create(Schema.Type.STRING);
-        }
-        return schema;
-      }
-
-      public TreeMap<String, String> getDestination(PubsubMessage message) {
-        TreeMap<String, String> map = new TreeMap<>();
-        map.putAll(message.getAttributeMap());
-        return map;
-      }
-
-      public TreeMap<String, String> getDefaultDestination() {
-        return new TreeMap<>();
-      }
-
-      public FilenamePolicy getFilenamePolicy(TreeMap<String, String> destination) {
-        List<String> placeholders = pathTemplate.get().extractValuesFrom(destination);
-        ResourceId baseFilename = FileSystems.matchNewResource(staticPrefix.get(), true);
-        ResourceId filename = baseFilename.resolve(
-            pathTemplate.get().replaceDynamicPart(placeholders),
-            StandardResolveOptions.RESOLVE_FILE);
-        return DefaultFilenamePolicy
-            .fromParams(new Params().withBaseFilename(filename).withSuffix(".avro"));
-      }
-
-      public Coder<TreeMap<String, String>> getDestinationCoder() {
-        return AttributeCoder.of();
-      }
-    }
-
-    @Override
-    public WithErrors.Result<PDone> expand(PCollection<PubsubMessage> input) {
-      PCollectionView<AvroSchemaStore> schemaSideInput = input.getPipeline()
-          .apply(Create.of(schemaStore)).apply(View.<AvroSchemaStore>asSingleton());
-
-      // When working with DynamicAvroDestinations,
-      File tempDirectory = Files.createTempDir();
-      ResourceId tempResource = FileSystems.matchNewResource(tempDirectory.getAbsolutePath(), true);
       input //
           .apply(Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
               // We allow lateness up to the maximum Cloud Pub/Sub retention of 7 days documented in
               // https://cloud.google.com/pubsub/docs/subscriber
               .withAllowedLateness(Duration.standardDays(7)) //
               .discardingFiredPanes())
-          .apply(AvroIO.<PubsubMessage>writeCustomTypeToGenericRecords()
-              .to(new PubsubMessageDynamicAvroDestinations(schemaSideInput))
-              .withTempDirectory(tempResource));
+          .apply(write);
+
       return WithErrors.Result.of(PDone.in(input.getPipeline()),
           EmptyErrors.in(input.getPipeline()));
     }
