@@ -9,6 +9,11 @@ import static org.junit.Assert.assertThat;
 
 import com.google.common.io.Resources;
 import com.mozilla.telemetry.matchers.Lines;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.List;
 import org.hamcrest.Matchers;
@@ -45,15 +50,18 @@ public class SinkAvroTest {
   }
 
   @Test
-  public void testJsonToAvro() {
+  public void testJsonToAvro() throws IOException {
     String input = Resources.getResource("testdata/avro-message-single-doctype.ndjson").getPath();
     String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
     String output = outputPath + "/out";
+    String errorOutput = outputPath + "/err";
 
     Sink.main(new String[] { "--inputFileFormat=json", "--inputType=file", "--input=" + input,
         "--outputType=avro", "--output=" + output, "--outputFileCompression=UNCOMPRESSED",
-        "--schemaLocation=" + schemas });
+        "--schemaLocation=" + schemas, "--errorOutputFileCompression=UNCOMPRESSED",
+        "--errorOutputType=file", "--errorOutput=" + errorOutput, });
 
-    // TODO: assert properties
+    Path path = Paths.get(outputPath);
+    Files.walk(path).filter(Files::isRegularFile).forEach(System.out::println);
   }
 }
