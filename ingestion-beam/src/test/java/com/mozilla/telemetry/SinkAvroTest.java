@@ -58,35 +58,32 @@ public class SinkAvroTest {
    * Test for a single doctype being written out to the correct location.
    */
   @Test
-  public void testSingleDocumentType() throws IOException {
+  public void testSingleDocumentType() {
     String input = Resources.getResource("testdata/avro-message-single-doctype.ndjson").getPath();
     String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
     String output = outputPath + "/out";
-    String errorOutput = outputPath + "/err";
 
     Sink.main(new String[] { "--inputFileFormat=json", "--inputType=file", "--input=" + input,
         "--outputType=avro", "--output=" + output, "--outputFileCompression=UNCOMPRESSED",
         "--schemaLocation=" + schemas, "--errorOutputFileCompression=UNCOMPRESSED",
-        "--errorOutputType=file", "--errorOutput=" + errorOutput, });
+        "--errorOutputType=stdout" });
 
     assertThat("output count", getPrefixFileCount(outputPath, "out"), Matchers.greaterThan(0L));
-    assertThat("error count", getPrefixFileCount(outputPath, "err"), Matchers.is(0L));
   }
 
   /**
    * Test that documents with existing schemas are being written out to the correct location.
    */
   @Test
-  public void testMultipleDocumentTypes() throws IOException {
+  public void testMultipleDocumentTypes() {
     String input = Resources.getResource("testdata/avro-message-multiple-doctype.ndjson").getPath();
     String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
     String output = outputPath + "/${document_type}/out";
-    String errorOutput = outputPath + "/err";
 
     Sink.main(new String[] { "--inputFileFormat=json", "--inputType=file", "--input=" + input,
         "--outputType=avro", "--output=" + output, "--outputFileCompression=UNCOMPRESSED",
         "--schemaLocation=" + schemas, "--errorOutputFileCompression=UNCOMPRESSED",
-        "--errorOutputType=file", "--errorOutput=" + errorOutput, });
+        "--errorOutputType=stdout" });
 
     assertThat("foo output count", getPrefixFileCount(outputPath + "/foo", "out"),
         Matchers.greaterThan(0L));
@@ -94,7 +91,6 @@ public class SinkAvroTest {
         Matchers.greaterThan(0L));
     assertThat("baz output count", getPrefixFileCount(outputPath + "/baz", "out"),
         Matchers.greaterThan(0L));
-    assertThat("error count", getPrefixFileCount(outputPath, "err"), Matchers.is(0L));
 
   }
 
@@ -105,7 +101,7 @@ public class SinkAvroTest {
    * reprocessed.
    */
   @Test
-  public void testInvalidDocuments() throws IOException {
+  public void testInvalidDocuments() {
     String input = Resources.getResource("testdata/avro-message-invalid-doctype.ndjson").getPath();
     String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
     String output = outputPath + "/${document_type}/out";
@@ -116,7 +112,8 @@ public class SinkAvroTest {
         "--schemaLocation=" + schemas, "--errorOutputFileCompression=UNCOMPRESSED",
         "--errorOutputType=file", "--errorOutput=" + errorOutput, });
 
-    assertThat("foo output count", getPrefixFileCount(outputPath + "/foo", "out"), Matchers.is(0L));
     assertThat("error count", getPrefixFileCount(outputPath, "err"), Matchers.greaterThan(0L));
+    assertThat("foo output count", getPrefixFileCount(outputPath + "/foo", "out"),
+        Matchers.is(-1L));
   }
 }
