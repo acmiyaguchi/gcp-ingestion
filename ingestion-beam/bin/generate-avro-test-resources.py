@@ -9,17 +9,22 @@ INGESTION_BEAM_ROOT = os.path.realpath(
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
 )
 
-AVRO_SCHEMAS = {
-    "schemas/namespace_0/foo/foo.1.avro.json": {
+
+def generate_schema(payload_schema):
+    return {
         "type": "record",
         "name": "foo",
         "fields": [
             {"name": "attributeMap", "type": {"type": "map", "values": "string"}},
-            {"name": "payload", "type": "int"},
+            {"name": "payload", "type": payload_schema},
         ],
-    },
-    "schemas/namespace_0/bar/bar.1.avro.json": {"type": "int"},
-    "schemas/namespace_1/baz/baz.1.avro.json": {"type": "null"},
+    }
+
+
+AVRO_SCHEMAS = {
+    "schemas/namespace_0/foo/foo.1.avro.json": generate_schema({"type": "int"}),
+    "schemas/namespace_0/bar/bar.1.avro.json": generate_schema({"type": "int"}),
+    "schemas/namespace_1/baz/baz.1.avro.json": generate_schema({"type": "null"}),
     "schemas/namespace_1/baz/baz.1.schema.json": {"type": "null"},
 }
 

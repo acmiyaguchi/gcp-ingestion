@@ -31,8 +31,7 @@ import org.junit.rules.TemporaryFolder;
    - document_type
    - document_version
 
-   The documents will need to have a corresponding store. Here, we will be testing a simple document containing
-   integers.
+   The documents will need to have a corresponding store. The schemas are documented in `bin/generate-avro-test-resources.py`.
  */
 public class SinkAvroTest {
 
@@ -49,8 +48,20 @@ public class SinkAvroTest {
     outputPath = outputFolder.getRoot().getAbsolutePath();
   }
 
+  private long getPrefixFileCount(String path, String prefix) {
+    try {
+      return Files.walk(Paths.get(path)).filter(Files::isRegularFile)
+          .filter(p -> p.toFile().getName().startsWith(prefix)).count();
+    } catch (IOException e) {
+      return -1;
+    }
+  }
+
+  /**
+   * Test for a single doctype being written out to the correct location.
+   */
   @Test
-  public void testJsonToAvro() throws IOException {
+  public void testSingleDocumentType() throws IOException {
     String input = Resources.getResource("testdata/avro-message-single-doctype.ndjson").getPath();
     String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
     String output = outputPath + "/out";
@@ -61,7 +72,53 @@ public class SinkAvroTest {
         "--schemaLocation=" + schemas, "--errorOutputFileCompression=UNCOMPRESSED",
         "--errorOutputType=file", "--errorOutput=" + errorOutput, });
 
-    Path path = Paths.get(outputPath);
-    Files.walk(path).filter(Files::isRegularFile).forEach(System.out::println);
+    assertThat("output count", getPrefixFileCount(outputPath, "out"), Matchers.greaterThan(0L));
+    assertThat("error count", getPrefixFileCount(outputPath, "err"), Matchers.is(0L));
+  }
+
+  /**
+   * Test that documents with existing schemas are being written out to the correct location.
+   */
+  @Test
+  public void testMultipleDocumentTypes() throws IOException {
+    String input = Resources.getResource("testdata/avro-message-multiple-doctype.ndjson").getPath();
+    String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
+    String output = outputPath + "/${document_type}/out";
+    String errorOutput = outputPath + "/err";
+
+    Sink.main(new String[] { "--inputFileFormat=json", "--inputType=file", "--input=" + input,
+        "--outputType=avro", "--output=" + output, "--outputFileCompression=UNCOMPRESSED",
+        "--schemaLocation=" + schemas, "--errorOutputFileCompression=UNCOMPRESSED",
+        "--errorOutputType=file", "--errorOutput=" + errorOutput, });
+
+    assertThat("foo output count", getPrefixFileCount(outputPath + "/foo", "out"),
+        Matchers.greaterThan(0L));
+    assertThat("bar output count", getPrefixFileCount(outputPath + "/bar", "out"),
+        Matchers.greaterThan(0L));
+    assertThat("baz output count", getPrefixFileCount(outputPath + "/baz", "out"),
+        Matchers.greaterThan(0L));
+    assertThat("error count", getPrefixFileCount(outputPath, "err"), Matchers.is(0L));
+
+  }
+
+  /**
+   * Test that for invalid documents. This case includes a ping where the data wouldn't have passed
+   * validation and a document where a schema doesn't exist. These documents should go to the error
+   * collection so they can be reprocessed.
+   */
+  @Test
+  public void testInvalidDocuments() throws IOException {
+    String input = Resources.getResource("testdata/avro-message-invalid-doctype.ndjson").getPath();
+    String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
+    String output = outputPath + "/${document_type}/out";
+    String errorOutput = outputPath + "/err";
+
+    Sink.main(new String[] { "--inputFileFormat=json", "--inputType=file", "--input=" + input,
+        "--outputType=avro", "--output=" + output, "--outputFileCompression=UNCOMPRESSED",
+        "--schemaLocation=" + schemas, "--errorOutputFileCompression=UNCOMPRESSED",
+        "--errorOutputType=file", "--errorOutput=" + errorOutput, });
+
+    assertThat("foo output count", getPrefixFileCount(outputPath + "/foo", "out"), Matchers.is(0L));
+    assertThat("error count", getPrefixFileCount(outputPath, "err"), Matchers.greaterThan(0L));
   }
 }
