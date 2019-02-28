@@ -29,17 +29,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.DatumReader;
 import org.apache.avro.io.Decoder;
 import org.apache.avro.io.DecoderFactory;
-import org.apache.avro.Schema;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
-import org.apache.beam.sdk.io.Compression;
 import org.apache.beam.sdk.io.AvroIO;
+import org.apache.beam.sdk.io.Compression;
 import org.apache.beam.sdk.io.FileIO;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
@@ -197,6 +197,7 @@ public abstract class Write
     /** A functor that constructs a GenericRecord from a PubsubMessage. */
     public class RecordFormatter implements AvroIO.RecordFormatter<PubsubMessage> {
 
+      /** Convert a PubsubMessage into an Avro record with the provided schema. */
       public GenericRecord formatRecord(PubsubMessage element, Schema schema) {
         String message;
         GenericRecord result;

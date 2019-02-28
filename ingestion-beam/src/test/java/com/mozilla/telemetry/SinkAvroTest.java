@@ -4,18 +4,13 @@
 
 package com.mozilla.telemetry;
 
-import static com.mozilla.telemetry.matchers.Lines.matchesInAnyOrder;
 import static org.junit.Assert.assertThat;
 
 import com.google.common.io.Resources;
-import com.mozilla.telemetry.matchers.Lines;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Collections;
-import java.util.List;
 import org.hamcrest.Matchers;
 import org.junit.Before;
 import org.junit.Rule;
@@ -24,14 +19,16 @@ import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
 
 /** 
-   The Avro tests are more involved than the file-based tests in SinkMainTest because there are more preconditions 
-   necessary for testing. Each of the documents require the following metadata to be attached to the payload:
+   The Avro tests are more involved than the file-based tests in SinkMainTest
+   because there are more preconditions necessary for testing. Each of the
+   documents require the following metadata to be attached to the payload:
 
    - document_namespace
    - document_type
    - document_version
 
-   The documents will need to have a corresponding store. The schemas are documented in `bin/generate-avro-test-resources.py`.
+   The documents will need to have a corresponding store. The schemas are
+   documented in `bin/generate-avro-test-resources.py`.
  */
 public class SinkAvroTest {
 
@@ -102,9 +99,10 @@ public class SinkAvroTest {
   }
 
   /**
-   * Test that for invalid documents. This case includes a ping where the data wouldn't have passed
-   * validation and a document where a schema doesn't exist. These documents should go to the error
-   * collection so they can be reprocessed.
+   * Test that for invalid documents. This case includes a ping where the data
+   * wouldn't have passed validation and a document where a schema doesn't
+   * exist. These documents should go to the error collection so they can be
+   * reprocessed.
    */
   @Test
   public void testInvalidDocuments() throws IOException {
