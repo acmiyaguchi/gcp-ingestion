@@ -78,7 +78,7 @@ public class SinkAvroTest {
   public void testMultipleDocumentTypes() {
     String input = Resources.getResource("testdata/avro-message-multiple-doctype.ndjson").getPath();
     String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
-    String output = outputPath + "/${document_type}/out";
+    String output = outputPath + "/${document_type:-default}/out";
 
     Sink.main(new String[] { "--inputFileFormat=json", "--inputType=file", "--input=" + input,
         "--outputType=avro", "--output=" + output, "--outputFileCompression=UNCOMPRESSED",
@@ -104,7 +104,7 @@ public class SinkAvroTest {
   public void testInvalidDocuments() {
     String input = Resources.getResource("testdata/avro-message-invalid-doctype.ndjson").getPath();
     String schemas = Resources.getResource("testdata/avro-schema-test.tar.gz").getPath();
-    String output = outputPath + "/${document_type}/out";
+    String output = outputPath + "/${document_type:-default}/out";
     String errorOutput = outputPath + "/err";
 
     Sink.main(new String[] { "--inputFileFormat=json", "--inputType=file", "--input=" + input,

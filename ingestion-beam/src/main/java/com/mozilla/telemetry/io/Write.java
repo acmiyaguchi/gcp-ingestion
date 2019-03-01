@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import org.apache.avro.AvroTypeException;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
@@ -208,6 +209,8 @@ public abstract class Write
           result = reader.read(null, decoder);
         } catch (IOException e) {
           throw new UncheckedIOException(e);
+        } catch (AvroTypeException e) {
+          throw e;
         }
         return result;
       }

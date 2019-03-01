@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import argparse
 import tarfile
 import tempfile
@@ -30,6 +32,7 @@ AVRO_SCHEMAS = {
 
 
 def main(tar_path):
+    logging.info("Writing tarfile to {}".format(tar_path))
     root = tempfile.mkdtemp()
 
     for path, schema in AVRO_SCHEMAS.items():
@@ -40,7 +43,7 @@ def main(tar_path):
         # write the schema to the folder
         schema_path = os.path.join(root, path)
 
-        logging.info("Creating {}".format(schema_path))
+        logging.info("Generating {}".format(path))
         with open(schema_path, "w") as fp:
             json.dump(schema, fp)
 
@@ -49,6 +52,7 @@ def main(tar_path):
     toplevel = os.path.basename(tar_path).split(".")[0]
     tf.add(root, arcname=toplevel)
     tf.close()
+    logging.info("Done!")
 
 
 if __name__ == "__main__":
