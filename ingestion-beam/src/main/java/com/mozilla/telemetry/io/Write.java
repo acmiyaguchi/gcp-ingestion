@@ -235,13 +235,7 @@ public abstract class Write
           }).withDestinationCoder(AttributeCoder.of()) //
           .withCompression(compression) //
           .via(Contextful.fn((TreeMap<String, String> dest, Contextful.Fn.Context ctx) -> {
-            Schema schema;
-            try {
-              schema = ctx.sideInput(schemaSideInput).getSchema(dest);
-            } catch (SchemaNotFoundException e) {
-              // provide a catch-all schema for incompatible document types
-              schema = Schema.create(Schema.Type.STRING);
-            }
+            Schema schema = ctx.sideInput(schemaSideInput).getSchema(dest);
             return AvroIO.sinkViaGenericRecords(schema, new RecordFormatter());
           }, Requirements.requiresSideInputs(schemaSideInput))) //
           .to(staticPrefix) //
