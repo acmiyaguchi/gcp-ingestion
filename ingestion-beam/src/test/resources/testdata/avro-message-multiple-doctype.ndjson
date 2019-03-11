@@ -1,3 +1,3 @@
 {"payload": "eyJ0ZXN0X2ludCI6IDF9", "attributeMap": {"document_namespace": "namespace_0", "document_version": 1, "document_type": "foo"}}
-{"payload": "eyJ0ZXN0X2ludCI6IDF9", "attributeMap": {"document_namespace": "namespace_0", "document_version": 1, "document_type": "bar"}}
-{"payload": "bnVsbA==", "attributeMap": {"document_namespace": "namespace_1", "document_version": 1, "document_type": "baz"}}
+{"payload": "eyJ0ZXN0X2V4dHJhIjogImV4dHJhIiwgInRlc3RfaW50IjogMX0=", "attributeMap": {"document_namespace": "namespace_0", "document_version": 1, "document_type": "bar"}}
+{"payload": "eyJ0ZXN0X251bGwiOiBudWxsfQ==", "attributeMap": {"document_namespace": "namespace_1", "document_version": 1, "document_type": "baz"}}

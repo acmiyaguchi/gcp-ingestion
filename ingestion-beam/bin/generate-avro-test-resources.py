@@ -24,6 +24,8 @@ def generate_schema(payload_schema):
     }
 
 
+# The payload object must be an object. This behavior is enforced by the utility
+# function found in com.mozilla.telemetry.util.Json
 AVRO_SCHEMAS = {
     "schemas/namespace_0/foo/foo.1.avro.json": {
         "type": "record",
@@ -35,7 +37,11 @@ AVRO_SCHEMAS = {
         "name": "payload",
         "fields": [{"name": "test_int", "type": "int"}],
     },
-    "schemas/namespace_1/baz/baz.1.avro.json": {"type": "null"},
+    "schemas/namespace_1/baz/baz.1.avro.json": {
+        "type": "record",
+        "name": "payload",
+        "fields": [{"name": "test_null", "type": "null"}],
+    },
     "schemas/namespace_1/baz/baz.1.schema.json": {"type": "null"},
 }
 
@@ -64,8 +70,9 @@ def test_single_doctype():
 def test_multiple_doctype():
     args = [
         ("namespace_0", "foo", 1, {"test_int": 1}),
-        ("namespace_0", "bar", 1, {"test_int": 1}),
-        ("namespace_1", "baz", 1, None),
+        # test extra fields in the document
+        ("namespace_0", "bar", 1, {"test_int": 1, "test_extra": "extra"}),
+        ("namespace_1", "baz", 1, {"test_null": None}),
     ]
     return "\n".join([generate_document(*arg) for arg in args])
 
