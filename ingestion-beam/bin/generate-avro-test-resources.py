@@ -6,6 +6,7 @@ import tempfile
 import os
 import json
 import logging
+import base64
 
 INGESTION_BEAM_ROOT = os.path.realpath(
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
@@ -24,14 +25,61 @@ def generate_schema(payload_schema):
 
 
 AVRO_SCHEMAS = {
-    "schemas/namespace_0/foo/foo.1.avro.json": generate_schema({"type": "int"}),
-    "schemas/namespace_0/bar/bar.1.avro.json": generate_schema({"type": "int"}),
-    "schemas/namespace_1/baz/baz.1.avro.json": generate_schema({"type": "null"}),
+    "schemas/namespace_0/foo/foo.1.avro.json": {
+        "type": "record",
+        "name": "payload",
+        "fields": [{"name": "test_int", "type": "int"}],
+    },
+    "schemas/namespace_0/bar/bar.1.avro.json": {
+        "type": "record",
+        "name": "payload",
+        "fields": [{"name": "test_int", "type": "int"}],
+    },
+    "schemas/namespace_1/baz/baz.1.avro.json": {"type": "null"},
     "schemas/namespace_1/baz/baz.1.schema.json": {"type": "null"},
 }
 
 
-def main(tar_path):
+def generate_document(namespace, doctype, docver, payload):
+    document = {
+        "attributeMap": {
+            "document_namespace": namespace,
+            "document_type": doctype,
+            "document_version": docver,
+        },
+        "payload": base64.b64encode(json.dumps(payload)),
+    }
+    return json.dumps(document)
+
+
+def test_single_doctype():
+    args = [
+        ("namespace_0", "foo", 1, {"test_int": 1}),
+        ("namespace_0", "foo", 1, {"test_int": 2}),
+        ("namespace_0", "foo", 1, {"test_int": 3}),
+    ]
+    return "\n".join([generate_document(*arg) for arg in args])
+
+
+def test_multiple_doctype():
+    args = [
+        ("namespace_0", "foo", 1, {"test_int": 1}),
+        ("namespace_0", "bar", 1, {"test_int": 1}),
+        ("namespace_1", "baz", 1, None),
+    ]
+    return "\n".join([generate_document(*arg) for arg in args])
+
+
+def test_invalid_doctype():
+    args = [
+        ("namespace_0", "foo", 1, {"test_int": "a string"}),
+        ("namespace_57", "???", 1, {"test_int": 1}),
+    ]
+    return "\n".join([generate_document(*arg) for arg in args])
+
+
+def main(output_path):
+    tar_path = os.path.join(output_path, "avro-schema-test.tar.gz")
     logging.info("Writing tarfile to {}".format(tar_path))
     root = tempfile.mkdtemp()
 
@@ -52,6 +100,18 @@ def main(tar_path):
     toplevel = os.path.basename(tar_path).split(".")[0]
     tf.add(root, arcname=toplevel)
     tf.close()
+
+    test_cases = [
+        ("avro-message-single-doctype.ndjson", test_single_doctype),
+        ("avro-message-multiple-doctype.ndjson", test_multiple_doctype),
+        ("avro-message-invalid-doctype.ndjson", test_invalid_doctype),
+    ]
+    for name, func in test_cases:
+        logging.info("Writing {}".format(name))
+        filename = os.path.join(output_path, name)
+        with open(filename, "w") as f:
+            f.write(func())
+
     logging.info("Done!")
 
 
@@ -61,9 +121,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-path",
         type=str,
-        default=os.path.join(
-            INGESTION_BEAM_ROOT, "src/test/resources/testdata/avro-schema-test.tar.gz"
-        ),
+        default=os.path.join(INGESTION_BEAM_ROOT, "src/test/resources/testdata"),
     )
     args = parser.parse_args()
     main(args.output_path)
