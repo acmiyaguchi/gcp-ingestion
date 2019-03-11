@@ -200,10 +200,10 @@ public abstract class Write
 
       /** Convert a PubsubMessage into an Avro record with the provided schema. */
       public GenericRecord formatRecord(PubsubMessage element, Schema schema) {
-        String message;
+        String message = "";
         GenericRecord result;
         try {
-          message = Json.asString(element);
+          message = Json.readJSONObject(element.getPayload()).toString();
           DatumReader<GenericRecord> reader = new GenericDatumReader<>(schema);
           Decoder decoder = DecoderFactory.get().jsonDecoder(schema, message);
           result = reader.read(null, decoder);
