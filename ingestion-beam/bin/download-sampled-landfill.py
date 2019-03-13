@@ -29,7 +29,7 @@ def construct_schema_set(path):
         construct_schema_identifier(x[2:])
         for x in map(lambda x: x.split("/"), listing)
         # mozilla-pipeline-schemas/schemas/namespace/doctype/doctype.version.schema.json
-        if len(x) == 5 and x[1] == "schemas" and x[-1].endswith(".schema.json")
+        if len(x) == 5 and x[1] == "schemas" and x[-1].endswith(".avro.json")
     }
     return paths
 
@@ -57,7 +57,7 @@ def generate_document(namespace, doctype, docver, payload):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    output_file = "avro-landfill-integration.ndjson"
+    output_file = os.path.join(INGESTION_BEAM_ROOT, "avro-landfill-integration.ndjson")
 
     bucket = "telemetry-parquet"
     prefix = "sanitized-landfill-sample/v3/submission_date_s3=20190310"
@@ -66,7 +66,7 @@ if __name__ == "__main__":
     objs = s3.list_objects(Bucket=bucket, Prefix=prefix)
     keys = [obj["Key"] for obj in objs["Contents"] if obj["Key"].endswith(".json")]
 
-    schemas = construct_schema_set(os.path.join(INGESTION_BEAM_ROOT, "schemas.tar.gz"))
+    schemas = construct_schema_set(os.path.join(INGESTION_BEAM_ROOT, "avro-schema.tar.gz"))
 
     fp = open(output_file, "w")
     for key in keys:
