@@ -6,6 +6,8 @@ package com.mozilla.telemetry.io;
 
 import com.google.api.services.bigquery.model.ErrorProto;
 import com.google.api.services.bigquery.model.TableRow;
+import com.mozilla.telemetry.avro.IdentityRecordFormatter;
+import com.mozilla.telemetry.avro.PubsubMessageRecordFormatter;
 import com.mozilla.telemetry.options.BigQueryWriteMethod;
 import com.mozilla.telemetry.options.InputType;
 import com.mozilla.telemetry.options.OutputFileFormat;
@@ -19,23 +21,15 @@ import com.mozilla.telemetry.transforms.WithErrors;
 import com.mozilla.telemetry.util.AttributeCoder;
 import com.mozilla.telemetry.util.DerivedAttributesMap;
 import com.mozilla.telemetry.util.DynamicPathTemplate;
-import com.mozilla.telemetry.util.Json;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
-import org.apache.avro.AvroTypeException;
 import org.apache.avro.Schema;
-import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
-import org.apache.avro.io.DatumReader;
-import org.apache.avro.io.Decoder;
-import org.apache.avro.io.DecoderFactory;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
@@ -55,9 +49,13 @@ import org.apache.beam.sdk.options.ValueProvider;
 import org.apache.beam.sdk.options.ValueProvider.NestedValueProvider;
 import org.apache.beam.sdk.transforms.Contextful;
 import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.DoFn.ProcessContext;
+import org.apache.beam.sdk.transforms.DoFn.ProcessElement;
 import org.apache.beam.sdk.transforms.Flatten;
 import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.PTransform;
+import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.Requirements;
 import org.apache.beam.sdk.transforms.View;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
@@ -182,6 +180,8 @@ public abstract class Write
     private final Compression compression;
     private final InputType inputType;
     private final AvroSchemaStore schemaStore;
+    private final PubsubMessageRecordFormatter formatter = new PubsubMessageRecordFormatter();
+    private final IdentityRecordFormatter identityFormatter = new IdentityRecordFormatter();
 
     /** Public constructor. */
     public AvroOutput(ValueProvider<String> outputPrefix, Duration windowDuration,
@@ -195,30 +195,9 @@ public abstract class Write
       this.schemaStore = AvroSchemaStore.of(schemasLocation);
     }
 
-    /** A functor that constructs a GenericRecord from a PubsubMessage. */
-    public class RecordFormatter implements AvroIO.RecordFormatter<PubsubMessage> {
-
-      /** Convert a PubsubMessage into an Avro record with the provided schema. */
-      public GenericRecord formatRecord(PubsubMessage element, Schema schema) {
-        String message = "";
-        GenericRecord result;
-        try {
-          message = Json.readJSONObject(element.getPayload()).toString();
-          DatumReader<GenericRecord> reader = new GenericDatumReader<>(schema);
-          Decoder decoder = DecoderFactory.get().jsonDecoder(schema, message);
-          result = reader.read(null, decoder);
-        } catch (IOException e) {
-          throw new UncheckedIOException(e);
-        } catch (AvroTypeException e) {
-          throw e;
-        }
-        return result;
-      }
-    }
-
     @Override
     public WithErrors.Result<PDone> expand(PCollection<PubsubMessage> input) {
-      PCollectionView<AvroSchemaStore> schemaSideInput = input.getPipeline()
+      final PCollectionView<AvroSchemaStore> schemaSideInput = input.getPipeline()
           .apply(Create.of(schemaStore)).apply(View.asSingleton());
 
       ValueProvider<DynamicPathTemplate> pathTemplate = NestedValueProvider.of(outputPrefix,
@@ -226,17 +205,30 @@ public abstract class Write
       ValueProvider<String> staticPrefix = NestedValueProvider.of(pathTemplate,
           value -> value.staticPrefix);
 
-      FileIO.Write<TreeMap<String, String>, PubsubMessage> write = FileIO
-          .<TreeMap<String, String>, PubsubMessage>writeDynamic() //
-          .by(message -> {
+      ParDo.SingleOutput<PubsubMessage, KV<Map<String, String>, GenericRecord>> intoGenericRecord = ParDo
+          .of(new DoFn<PubsubMessage, KV<Map<String, String>, GenericRecord>>() {
+
+            @ProcessElement
+            public void processElement(ProcessContext ctx) throws SchemaNotFoundException {
+              PubsubMessage message = ctx.element();
+              Map<String, String> attributes = message.getAttributeMap();
+              Schema schema = ctx.sideInput(schemaSideInput).getSchema(attributes);
+              GenericRecord record = formatter.formatRecord(message, schema);
+              ctx.output(KV.of(attributes, record));
+            }
+          }).withSideInputs(schemaSideInput);
+
+      FileIO.Write<TreeMap<String, String>, KV<Map<String, String>, GenericRecord>> write = FileIO
+          .<TreeMap<String, String>, KV<Map<String, String>, GenericRecord>>writeDynamic() //
+          .by(element -> {
             TreeMap<String, String> map = new TreeMap<>();
-            map.putAll(message.getAttributeMap());
+            map.putAll(element.getKey());
             return map;
           }).withDestinationCoder(AttributeCoder.of()) //
           .withCompression(compression) //
           .via(Contextful.fn((TreeMap<String, String> dest, Contextful.Fn.Context ctx) -> {
             Schema schema = ctx.sideInput(schemaSideInput).getSchema(dest);
-            return AvroIO.sinkViaGenericRecords(schema, new RecordFormatter());
+            return AvroIO.sinkViaGenericRecords(schema, identityFormatter);
           }, Requirements.requiresSideInputs(schemaSideInput))) //
           .to(staticPrefix) //
           .withNaming((TreeMap<String, String> destination) -> {
@@ -258,6 +250,7 @@ public abstract class Write
               // https://cloud.google.com/pubsub/docs/subscriber
               .withAllowedLateness(Duration.standardDays(7)) //
               .discardingFiredPanes())
+          .apply("PubsubMessageToGenericRecord", intoGenericRecord) //
           .apply(write);
 
       return WithErrors.Result.of(PDone.in(input.getPipeline()),
