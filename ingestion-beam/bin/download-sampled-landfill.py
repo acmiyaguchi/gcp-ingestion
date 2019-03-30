@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import boto3
 import base64
 import logging
 import json
@@ -8,30 +7,38 @@ import os
 import tarfile
 from functools import partial
 
+import boto3
+import rapidjson  # python-rapidjson
+
+
 INGESTION_BEAM_ROOT = os.path.realpath(
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
 )
 
 
-def construct_schema_identifier(parsed_path):
-    # ex: [test, test, test.1.schema.json]
-    namespace = parsed_path[0]
-    document_type = parsed_path[1]
-    document_version = parsed_path[2].split(".")[1]
-    return ".".join([namespace, document_type, document_version])
+def parse_schema_name(path):
+    """Given a directory path to a json schema in the mps directory, generate
+    the fully qualified name in the form `{namespace}.{doctype}.{docver}`."""
+    elements = path.split("/")
+    doctype, docver = elements[-1].split(".")[:-2]
+    namespace = elements[-3]
+    return f"{namespace}.{doctype}.{docver}"
 
 
-def construct_schema_set(path):
-    """return a set containing "{namespace}.{doctype}.{doctype}" strings"""
+def load_schemas(path):
+    """return a dictionary containing "{namespace}.{doctype}.{docver}" to validator"""
     with tarfile.open(path, "r") as tf:
-        listing = tf.getnames()
-    paths = {
-        construct_schema_identifier(x[2:])
-        for x in map(lambda x: x.split("/"), listing)
-        # mozilla-pipeline-schemas/schemas/namespace/doctype/doctype.version.schema.json
-        if len(x) == 5 and x[1] == "schemas" and x[-1].endswith(".avro.json")
-    }
-    return paths
+        tf.extractall()
+        root = tf.getnames()[0]
+    schemas = {}
+    for root, _, files in os.walk(root+"/schemas"):
+        for name in files:
+            if name.endswith(".schema.json"):
+                schemafile = os.path.join(root, name)
+                name = parse_schema_name(schemafile)
+                with open(schemafile, "r") as f:
+                    schemas[name] = rapidjson.Validator(f.read())
+    return schemas
 
 
 def get_schema_name(key):
@@ -57,16 +64,16 @@ def generate_document(namespace, doctype, docver, payload):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    output_file = os.path.join(INGESTION_BEAM_ROOT, "avro-landfill-integration.ndjson")
+    os.chdir(INGESTION_BEAM_ROOT)
+    output_file = "avro-landfill-integration.ndjson"
+    schemas = load_schemas("schemas.tar.gz")
 
     bucket = "telemetry-parquet"
-    prefix = "sanitized-landfill-sample/v3/submission_date_s3=20190310"
+    prefix = "sanitized-landfill-sample/v3/submission_date_s3=20190328"
     s3 = boto3.client("s3")
 
     objs = s3.list_objects(Bucket=bucket, Prefix=prefix)
     keys = [obj["Key"] for obj in objs["Contents"] if obj["Key"].endswith(".json")]
-
-    schemas = construct_schema_set(os.path.join(INGESTION_BEAM_ROOT, "avro-schema.tar.gz"))
 
     fp = open(output_file, "w")
     for key in keys:
@@ -86,7 +93,9 @@ if __name__ == "__main__":
         for line in lines:
             # each of the lines contains metadata with a content field
             content = json.loads(line).get("content")
-            if not content:
+            try:
+                schemas[schema_name](content)
+            except ValueError:
                 invalid += 1
                 continue
             pubsub_message = generate_document(namespace, doctype, docver, content)

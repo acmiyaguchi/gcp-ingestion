@@ -3,8 +3,8 @@
 
 cd "$(dirname "$0")/.." || exit
 
-if [ ! -x  "$(command -v jsonschema_transpiler)" ]; then
-    echo "jsonschema_transpiler is not installed"
+if [ ! -x  "$(command -v jsonschema-transpiler)" ]; then
+    echo "jsonschema-transpiler is not installed"
     echo "Run 'cargo install --git https://github.com/acmiyaguchi/jsonschema-transpiler.git --branch dev'"
     exit 1
 fi
@@ -47,7 +47,7 @@ function generate_avro() {
     # create the folder to the new schema
     mkdir -p "$outschema/$relpath"
 
-    if ! jsonschema_transpiler --type avro -f "$orig_path" > "$outpath" 2> /dev/null; then
+    if ! jsonschema-transpiler --type avro "$orig_path" > "$outpath" 2> /dev/null; then
         echo "Unable to convert $(basename "$orig_path")"
         rm "$outpath"
         ((failed++))
@@ -59,7 +59,7 @@ for schema in $schemas; do
     generate_avro "$schema"
 done
 # see: https://github.com/acmiyaguchi/jsonschema-transpiler/pull/36
-echo "$failed/$total failed to convert"
+echo "$((total-failed))/$total sucessfully converted"
 
 # prune folders from failed conversions
 find "$outschema" -type d -empty -delete
