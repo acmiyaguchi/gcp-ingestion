@@ -15,6 +15,7 @@ import com.mozilla.telemetry.options.OutputFileFormat;
 import com.mozilla.telemetry.schemas.AvroSchemaStore;
 import com.mozilla.telemetry.schemas.SchemaNotFoundException;
 import com.mozilla.telemetry.transforms.CompressPayload;
+import com.mozilla.telemetry.transforms.FailureMessage;
 import com.mozilla.telemetry.transforms.LimitPayloadSize;
 import com.mozilla.telemetry.transforms.PubsubConstraints;
 import com.mozilla.telemetry.transforms.PubsubMessageToTableRow;
@@ -65,8 +66,11 @@ import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
+import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PDone;
+import org.apache.beam.sdk.values.TupleTag;
+import org.apache.beam.sdk.values.TupleTagList;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.ValueInSingleWindow;
 import org.joda.time.Duration;
@@ -202,24 +206,33 @@ public abstract class Write
       final PCollectionView<AvroSchemaStore> schemaSideInput = input.getPipeline()
           .apply(Create.of(schemaStore)).apply(View.asSingleton());
 
+      final TupleTag<PubsubMessage> successTag = new TupleTag<PubsubMessage>() {
+      };
+      final TupleTag<PubsubMessage> errorTag = new TupleTag<PubsubMessage>() {
+      };
+
       ValueProvider<DynamicPathTemplate> pathTemplate = NestedValueProvider.of(outputPrefix,
           DynamicPathTemplate::new);
       ValueProvider<String> staticPrefix = NestedValueProvider.of(pathTemplate,
           value -> value.staticPrefix);
 
-      ParDo.SingleOutput<PubsubMessage, PubsubMessage> intoGenericRecord = ParDo
+      ParDo.MultiOutput<PubsubMessage, PubsubMessage> intoGenericRecord = ParDo
           .of(new DoFn<PubsubMessage, PubsubMessage>() {
 
             @ProcessElement
             public void processElement(ProcessContext ctx) throws SchemaNotFoundException {
               PubsubMessage message = ctx.element();
               Map<String, String> attributes = message.getAttributeMap();
-              Schema schema = ctx.sideInput(schemaSideInput).getSchema(attributes);
-              GenericRecord record = formatter.formatRecord(message, schema);
-              byte[] avroPayload = binaryEncoder.encodeRecord(record, schema);
-              ctx.output(new PubsubMessage(avroPayload, attributes));
+              try {
+                Schema schema = ctx.sideInput(schemaSideInput).getSchema(attributes);
+                GenericRecord record = formatter.formatRecord(message, schema);
+                byte[] avroPayload = binaryEncoder.encodeRecord(record, schema);
+                ctx.output(successTag, new PubsubMessage(avroPayload, attributes));
+              } catch (Exception e) {
+                ctx.output(errorTag, FailureMessage.of(this, message, e));
+              }
             }
-          }).withSideInputs(schemaSideInput);
+          }).withSideInputs(schemaSideInput).withOutputTags(successTag, TupleTagList.of(errorTag));
 
       FileIO.Write<TreeMap<String, String>, PubsubMessage> write = FileIO
           .<TreeMap<String, String>, PubsubMessage>writeDynamic() //
@@ -247,17 +260,17 @@ public abstract class Write
         write = write.withNumShards(numShards);
       }
 
-      input //
+      PCollectionTuple results = input //
           .apply(Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
               // We allow lateness up to the maximum Cloud Pub/Sub retention of 7 days documented in
               // https://cloud.google.com/pubsub/docs/subscriber
               .withAllowedLateness(Duration.standardDays(7)) //
               .discardingFiredPanes())
-          .apply("PubsubMessageToGenericRecord", intoGenericRecord) //
-          .apply(write);
+          .apply("PubsubMessageToGenericRecord", intoGenericRecord);
 
-      return WithErrors.Result.of(PDone.in(input.getPipeline()),
-          EmptyErrors.in(input.getPipeline()));
+      results.get(successTag).apply(write);
+
+      return WithErrors.Result.of(PDone.in(input.getPipeline()), results.get(errorTag));
     }
   }
 

@@ -6,6 +6,7 @@ package com.mozilla.telemetry.avro;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.Serializable;
 import java.io.UncheckedIOException;
 
 import org.apache.avro.Schema;
@@ -19,7 +20,7 @@ import org.apache.avro.io.EncoderFactory;
  * Decodes an incoming PubsubMessage that contains an avro encoded payload that
  * is registered in the schema store.
  */
-public class GenericRecordBinaryEncoder {
+public class GenericRecordBinaryEncoder implements Serializable {
 
   public byte[] encodeRecord(GenericRecord record, Schema schema) {
     try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
