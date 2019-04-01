@@ -260,15 +260,15 @@ public abstract class Write
         write = write.withNumShards(numShards);
       }
 
-      PCollectionTuple results = input //
-          .apply(Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
-              // We allow lateness up to the maximum Cloud Pub/Sub retention of 7 days documented in
-              // https://cloud.google.com/pubsub/docs/subscriber
-              .withAllowedLateness(Duration.standardDays(7)) //
-              .discardingFiredPanes())
-          .apply("PubsubMessageToGenericRecord", intoGenericRecord);
+      // Without this, we may run into `Inputs to Flatten had incompatible window windowFns`
+      Window<PubsubMessage> window = Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
+      // We allow lateness up to the maximum Cloud Pub/Sub retention of 7 days documented in
+      // https://cloud.google.com/pubsub/docs/subscriber
+      .withAllowedLateness(Duration.standardDays(7)) //
+      .discardingFiredPanes();
 
-      results.get(successTag).apply(write);
+      PCollectionTuple results = input.apply("PubsubMessageToGenericRecord", intoGenericRecord);
+      results.get(successTag).apply(window).apply(write);
 
       return WithErrors.Result.of(PDone.in(input.getPipeline()), results.get(errorTag));
     }
