@@ -27,6 +27,7 @@ public class GenericRecordBinaryEncoder implements Serializable {
       DatumWriter<GenericRecord> writer = new GenericDatumWriter<>(schema);
       Encoder encoder = EncoderFactory.get().binaryEncoder(baos, null);
       writer.write(record, encoder);
+      encoder.flush();
       return baos.toByteArray();
     } catch (IOException e) {
       throw new UncheckedIOException(e);
