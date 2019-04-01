@@ -6,7 +6,8 @@ package com.mozilla.telemetry.io;
 
 import com.google.api.services.bigquery.model.ErrorProto;
 import com.google.api.services.bigquery.model.TableRow;
-import com.mozilla.telemetry.avro.IdentityRecordFormatter;
+import com.mozilla.telemetry.avro.BinaryRecordFormatter;
+import com.mozilla.telemetry.avro.GenericRecordBinaryEncoder;
 import com.mozilla.telemetry.avro.PubsubMessageRecordFormatter;
 import com.mozilla.telemetry.options.BigQueryWriteMethod;
 import com.mozilla.telemetry.options.InputType;
@@ -181,7 +182,8 @@ public abstract class Write
     private final InputType inputType;
     private final AvroSchemaStore schemaStore;
     private final PubsubMessageRecordFormatter formatter = new PubsubMessageRecordFormatter();
-    private final IdentityRecordFormatter identityFormatter = new IdentityRecordFormatter();
+    private final GenericRecordBinaryEncoder binaryEncoder = new GenericRecordBinaryEncoder();
+    private final BinaryRecordFormatter binaryFormatter = new BinaryRecordFormatter();
 
     /** Public constructor. */
     public AvroOutput(ValueProvider<String> outputPrefix, Duration windowDuration,
@@ -205,8 +207,8 @@ public abstract class Write
       ValueProvider<String> staticPrefix = NestedValueProvider.of(pathTemplate,
           value -> value.staticPrefix);
 
-      ParDo.SingleOutput<PubsubMessage, KV<Map<String, String>, GenericRecord>> intoGenericRecord = ParDo
-          .of(new DoFn<PubsubMessage, KV<Map<String, String>, GenericRecord>>() {
+      ParDo.SingleOutput<PubsubMessage, PubsubMessage> intoGenericRecord = ParDo
+          .of(new DoFn<PubsubMessage, PubsubMessage>() {
 
             @ProcessElement
             public void processElement(ProcessContext ctx) throws SchemaNotFoundException {
@@ -214,21 +216,22 @@ public abstract class Write
               Map<String, String> attributes = message.getAttributeMap();
               Schema schema = ctx.sideInput(schemaSideInput).getSchema(attributes);
               GenericRecord record = formatter.formatRecord(message, schema);
-              ctx.output(KV.of(attributes, record));
+              byte[] avroPayload = binaryEncoder.encodeRecord(record, schema);
+              ctx.output(new PubsubMessage(avroPayload, attributes));
             }
           }).withSideInputs(schemaSideInput);
 
-      FileIO.Write<TreeMap<String, String>, KV<Map<String, String>, GenericRecord>> write = FileIO
-          .<TreeMap<String, String>, KV<Map<String, String>, GenericRecord>>writeDynamic() //
+      FileIO.Write<TreeMap<String, String>, PubsubMessage> write = FileIO
+          .<TreeMap<String, String>, PubsubMessage>writeDynamic() //
           .by(element -> {
             TreeMap<String, String> map = new TreeMap<>();
-            map.putAll(element.getKey());
+            map.putAll(element.getAttributeMap());
             return map;
           }).withDestinationCoder(AttributeCoder.of()) //
           .withCompression(compression) //
           .via(Contextful.fn((TreeMap<String, String> dest, Contextful.Fn.Context ctx) -> {
             Schema schema = ctx.sideInput(schemaSideInput).getSchema(dest);
-            return AvroIO.sinkViaGenericRecords(schema, identityFormatter);
+            return AvroIO.sinkViaGenericRecords(schema, binaryFormatter);
           }, Requirements.requiresSideInputs(schemaSideInput))) //
           .to(staticPrefix) //
           .withNaming((TreeMap<String, String> destination) -> {
