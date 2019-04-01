@@ -67,7 +67,7 @@ public class AvroSchemaStoreTest {
     attributes.put("document_type", "foo");
     attributes.put("document_version", "1");
     Schema schema = store.getSchema(attributes);
-    assertEquals(schema.getField("payload").schema().getType(), Schema.Type.INT);
+    assertEquals(schema.getField("test_int").schema().getType(), Schema.Type.INT);
 
   }
 
@@ -75,7 +75,7 @@ public class AvroSchemaStoreTest {
   public void testGetSchemaViaPath() throws SchemaNotFoundException {
     AvroSchemaStore store = AvroSchemaStore.of(LOCATION);
     Schema schema = store.getSchema("namespace_0/foo/foo.1.avro.json");
-    assertEquals(schema.getField("payload").schema().getType(), Schema.Type.INT);
+    assertEquals(schema.getField("test_int").schema().getType(), Schema.Type.INT);
   }
 
 }
