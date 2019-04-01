@@ -262,10 +262,10 @@ public abstract class Write
 
       // Without this, we may run into `Inputs to Flatten had incompatible window windowFns`
       Window<PubsubMessage> window = Window.<PubsubMessage>into(FixedWindows.of(windowDuration))
-      // We allow lateness up to the maximum Cloud Pub/Sub retention of 7 days documented in
-      // https://cloud.google.com/pubsub/docs/subscriber
-      .withAllowedLateness(Duration.standardDays(7)) //
-      .discardingFiredPanes();
+          // We allow lateness up to the maximum Cloud Pub/Sub retention of 7 days documented in
+          // https://cloud.google.com/pubsub/docs/subscriber
+          .withAllowedLateness(Duration.standardDays(7)) //
+          .discardingFiredPanes();
 
       PCollectionTuple results = input.apply("PubsubMessageToGenericRecord", intoGenericRecord);
       results.get(successTag).apply(window).apply(write);

@@ -22,6 +22,9 @@ import org.apache.avro.io.EncoderFactory;
  */
 public class GenericRecordBinaryEncoder implements Serializable {
 
+  /**
+   * Encode a GenericRecord into an avro encoded payload.
+   */
   public byte[] encodeRecord(GenericRecord record, Schema schema) {
     try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
       DatumWriter<GenericRecord> writer = new GenericDatumWriter<>(schema);

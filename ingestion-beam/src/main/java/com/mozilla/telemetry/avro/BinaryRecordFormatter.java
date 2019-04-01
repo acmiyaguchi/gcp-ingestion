@@ -19,7 +19,7 @@ import org.apache.beam.sdk.io.AvroIO.RecordFormatter;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
 
 /**
- * Decodes an incoming PubsubMessage with
+ * Decodes an incoming PubsubMessage that contains an avro encoded payload.
  */
 public class BinaryRecordFormatter implements RecordFormatter<PubsubMessage> {
 
