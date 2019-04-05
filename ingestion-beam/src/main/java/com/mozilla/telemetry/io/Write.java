@@ -20,7 +20,6 @@ import com.mozilla.telemetry.transforms.LimitPayloadSize;
 import com.mozilla.telemetry.transforms.PubsubConstraints;
 import com.mozilla.telemetry.transforms.PubsubMessageToTableRow;
 import com.mozilla.telemetry.transforms.WithErrors;
-import com.mozilla.telemetry.util.AttributeCoder;
 import com.mozilla.telemetry.util.DerivedAttributesMap;
 import com.mozilla.telemetry.util.DynamicPathTemplate;
 
@@ -28,7 +27,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -234,24 +232,19 @@ public abstract class Write
             }
           }).withSideInputs(schemaSideInput).withOutputTags(successTag, TupleTagList.of(errorTag));
 
-      FileIO.Write<TreeMap<String, String>, PubsubMessage> write = FileIO
-          .<TreeMap<String, String>, PubsubMessage>writeDynamic() //
-          .by(element -> {
-            TreeMap<String, String> map = new TreeMap<>();
-            map.putAll(element.getAttributeMap());
-            return map;
-          }).withDestinationCoder(AttributeCoder.of()) //
+      FileIO.Write<List<String>, PubsubMessage> write = FileIO
+          .<List<String>, PubsubMessage>writeDynamic() //
+          .by(message -> pathTemplate.get().extractValuesFrom(message.getAttributeMap()))
+          .withDestinationCoder(ListCoder.of(StringUtf8Coder.of())) //
           .withCompression(compression) //
-          .via(Contextful.fn((TreeMap<String, String> dest, Contextful.Fn.Context ctx) -> {
-            Schema schema = ctx.sideInput(schemaSideInput).getSchema(dest);
+          .via(Contextful.fn((List<String> dest, Contextful.Fn.Context ctx) -> {
+            Map<String, String> attributes = pathTemplate.get().getPlaceholderAttributes(dest);
+            Schema schema = ctx.sideInput(schemaSideInput).getSchema(attributes);
             return AvroIO.sinkViaGenericRecords(schema, binaryFormatter);
           }, Requirements.requiresSideInputs(schemaSideInput))) //
           .to(staticPrefix) //
-          .withNaming((TreeMap<String, String> destination) -> {
-            List<String> placeholders = pathTemplate.get().extractValuesFrom(destination);
-            String concreteValues = pathTemplate.get().replaceDynamicPart(placeholders);
-            return FileIO.Write.defaultNaming(concreteValues, ".avro");
-          });
+          .withNaming(placeholderValues -> FileIO.Write
+              .defaultNaming(pathTemplate.get().replaceDynamicPart(placeholderValues), ".avro"));
 
       if (inputType == InputType.pubsub) {
         // Passing a ValueProvider to withNumShards disables runner-determined sharding, so we
